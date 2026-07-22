@@ -191,7 +191,7 @@ fi
 
 
 def line_color(line: str) -> str:
-    if any(token in line for token in ("95/100", "GOOD", "FAST", "Ready to code? YES", "适合", "舒适", " 快 ")):
+    if any(token in line for token in ("100/100", "GOOD", "FAST", "Ready to code? YES", "适合", "舒适", " 快 ")):
         return GREEN
     if line.startswith(("Developer verdict", "Detected clients", "AI service latency", "AI service results", "Network bandwidth", "开发建议", "检测到的客户端", "AI 服务延迟", "AI 服务结论", "网络带宽")):
         return CYAN

@@ -9,6 +9,12 @@ All notable changes to ipcheck are documented here. The project follows
 
 - Added a localized Chinese terminal GIF to the Chinese README while keeping
   the English demo in the English README.
+- Replaced readiness-score rule v1 with a component-based rule v2 that scores
+  reachability, median TTFB, P95, and jitter separately and reduces the score
+  cliff at service-verdict boundaries.
+- Kept measured bandwidth speed and sample completeness as separate scoring
+  inputs, so a very slow partial estimate can no longer receive a smaller
+  penalty than a faster completed sample.
 
 ## [0.7.0] - 2026-07-22
 

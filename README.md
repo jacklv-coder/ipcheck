@@ -24,7 +24,7 @@ ipcheck v0.7.0 — AI coding network diagnostics
 
 Developer verdict
   Ready to code? YES
-  Readiness score: 95/100 · COMFORTABLE
+  Readiness score: 100/100 · COMFORTABLE
   This network is ready for AI-assisted development.
 
 Detected clients
@@ -153,10 +153,14 @@ higher and `ADEQUATE` from 2 Mbps. Lower measurements are `SLOW`. The optional
 substantially more data than ipcheck's capped Cloudflare checks.
 
 The readiness score is a transparent heuristic, not a claim about user
-percentiles. Rule v1 starts from the service-path verdict (`90` healthy, `70`
-usable but delayed, `45` reachable but temporarily unavailable, `35` poor, or
-`0` blocked). Completed bandwidth ratings can then add up to 5 points or deduct
-up to 10; partial samples deduct 2 points each. JSON exposes `score`,
+percentiles. Rule v2 gives the least healthy detected client up to 90
+service-path points: reachability and success rate contribute 35, median TTFB
+35, P95 10, and jitter 10. Each bandwidth direction adds 5 points when fast,
+3 when adequate, deducts 5 when slow, and stays neutral when unavailable; an
+incomplete sample deducts 2 more without hiding its measured speed class.
+Usable-but-delayed paths are capped at 89, temporarily unavailable or poor
+paths at 64, and blocked paths at 0. Score labels are `COMFORTABLE` from 90,
+`GOOD` from 75, `USABLE` from 65, and `LIMITED` below 65. JSON exposes `score`,
 `score_label`, `score_method`, and the per-component `score_breakdown` for
 automation.
 
