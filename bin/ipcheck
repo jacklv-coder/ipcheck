@@ -1,0 +1,441 @@
+#!/usr/bin/env bash
+# Measure the IP/proxy network path used by Codex/OpenAI endpoints.
+# Dependencies: bash, curl, awk, sed, sort. macOS networkQuality is optional.
+
+set -u
+
+VERSION="0.2.0"
+SAMPLES=5
+TIMEOUT=20
+ENDPOINTS="https://chatgpt.com/|https://api.openai.com/v1/models"
+CLI_ENDPOINTS_SET=0
+BANDWIDTH_URL="https://speed.cloudflare.com/__down?bytes=2000000"
+MODE="human"
+RUN_BANDWIDTH=1
+RUN_SYSTEM=0
+
+usage() {
+  cat <<'EOF'
+ipcheck - diagnose the IP/proxy path used by Codex/OpenAI
+
+Usage:
+  ipcheck [options]
+
+Options:
+  --json                 Emit machine-readable JSON.
+  --markdown             Emit a Markdown report.
+  --endpoint URL         Test one endpoint instead of the defaults (repeatable).
+  --samples N            Requests per endpoint (default: 5).
+  --timeout SECONDS      Per-request timeout (default: 20).
+  --no-bandwidth         Skip the 2 MB reference download test.
+  --system               Also run macOS networkQuality when available.
+  -h, --help             Show this help.
+
+Environment:
+  CODEX_NETWORK_ENDPOINTS  Pipe-separated endpoint list, e.g. URL1|URL2.
+  HTTPS_PROXY/ALL_PROXY    Proxy settings are respected by curl and reported redacted.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 2
+}
+
+is_integer() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) MODE="json" ;;
+    --markdown) MODE="markdown" ;;
+    --endpoint)
+      [ "$#" -ge 2 ] || die "--endpoint requires a URL"
+      if [ "$CLI_ENDPOINTS_SET" -eq 0 ]; then
+        ENDPOINTS="$2"
+        CLI_ENDPOINTS_SET=1
+      else
+        ENDPOINTS="$ENDPOINTS|$2"
+      fi
+      shift
+      ;;
+    --samples)
+      [ "$#" -ge 2 ] || die "--samples requires a number"
+      is_integer "$2" && [ "$2" -gt 0 ] || die "--samples must be a positive integer"
+      SAMPLES=$(printf '%s\n' "$2" | sed 's/^0*//')
+      shift
+      ;;
+    --timeout)
+      [ "$#" -ge 2 ] || die "--timeout requires a number"
+      is_integer "$2" && [ "$2" -gt 0 ] || die "--timeout must be a positive integer"
+      TIMEOUT=$(printf '%s\n' "$2" | sed 's/^0*//')
+      shift
+      ;;
+    --no-bandwidth) RUN_BANDWIDTH=0 ;;
+    --system) RUN_SYSTEM=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1 (use --help)" ;;
+  esac
+  shift
+done
+
+command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v awk >/dev/null 2>&1 || die "awk is required"
+command -v sort >/dev/null 2>&1 || die "sort is required"
+
+# curl does not automatically use macOS System Settings proxies. If no proxy
+# environment variable is set, honor the configured HTTPS system proxy.
+system_proxy_enabled=0
+system_proxy_host=""
+system_proxy_port=""
+if command -v scutil >/dev/null 2>&1; then
+  system_proxy_enabled=$(scutil --proxy 2>/dev/null | sed -n 's/ *HTTPSEnable : \([01]\).*/\1/p' | head -n 1)
+  system_proxy_host=$(scutil --proxy 2>/dev/null | sed -n 's/ *HTTPSProxy : \(.*\)/\1/p' | head -n 1)
+  system_proxy_port=$(scutil --proxy 2>/dev/null | sed -n 's/ *HTTPSPort : \(.*\)/\1/p' | head -n 1)
+fi
+proxy_env_found=0
+for proxy_name in HTTPS_PROXY https_proxy ALL_PROXY all_proxy; do
+  eval "proxy_value=\${$proxy_name-}"
+  [ -n "$proxy_value" ] && proxy_env_found=1
+done
+system_curl_proxy=""
+if [ "$proxy_env_found" -eq 0 ] && [ "$system_proxy_enabled" = "1" ] && [ -n "$system_proxy_host" ] && [ -n "$system_proxy_port" ]; then
+  system_curl_proxy="http://$system_proxy_host:$system_proxy_port"
+fi
+
+curl_with_proxy() {
+  if [ -n "$system_curl_proxy" ]; then
+    command curl --proxy "$system_curl_proxy" "$@"
+  else
+    command curl "$@"
+  fi
+}
+
+if [ "$CLI_ENDPOINTS_SET" -eq 0 ] && [ -n "${CODEX_NETWORK_ENDPOINTS-}" ]; then
+  ENDPOINTS="$CODEX_NETWORK_ENDPOINTS"
+fi
+
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck.XXXXXX") || die "cannot create a temporary directory"
+trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+redact_proxy() {
+  printf '%s' "$1" | sed -E 's#://[^/@]+@#://***@#'
+}
+
+redact_endpoint() {
+  printf '%s' "$1" | sed -E 's#://[^/@]+@#://***@#; s#\?.*$#?<redacted>#; s/#.*$//'
+}
+
+proxy_summary() {
+  local name value found=0
+  for name in HTTPS_PROXY https_proxy ALL_PROXY all_proxy; do
+    eval "value=\${$name-}"
+    if [ -n "$value" ]; then
+      [ "$found" -eq 0 ] || printf ', '
+      printf '%s=%s' "$name" "$(redact_proxy "$value")"
+      found=1
+    fi
+  done
+  if [ "$found" -eq 0 ] && [ "${system_proxy_enabled-0}" = "1" ] && [ -n "${system_proxy_host-}" ]; then
+    printf 'macOS HTTPS proxy=%s' "$system_proxy_host"
+    [ -n "${system_proxy_port-}" ] && printf ':%s' "$system_proxy_port"
+    found=1
+  fi
+  [ "$found" -eq 1 ] || printf 'none detected'
+  if command -v route >/dev/null 2>&1; then
+    route_interface=$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')
+    case "$route_interface" in
+      utun*) printf ', route=%s (VPN/tunnel)' "$route_interface" ;;
+    esac
+  fi
+}
+
+median_file() {
+  awk 'NF { print $1 }' "$1" | sort -n | awk '
+    { values[NR] = $1 }
+    END {
+      if (NR == 0) { print "0"; exit }
+      if (NR % 2) print values[(NR + 1) / 2]
+      else print (values[NR / 2] + values[NR / 2 + 1]) / 2
+    }'
+}
+
+p95_file() {
+  awk 'NF { print $1 }' "$1" | sort -n | awk '
+    { values[NR] = $1 }
+    END {
+      if (NR == 0) { print "0"; exit }
+      pindex = int((NR * 95 + 99) / 100)
+      if (pindex < 1) pindex = 1
+      print values[pindex]
+    }'
+}
+
+format_ms() {
+  awk -v value="$1" 'BEGIN { printf "%.0f ms", value }'
+}
+
+format_mbps() {
+  awk -v value="$1" 'BEGIN { printf "%.1f Mbps", value * 8 / 1000000 }'
+}
+
+format_bits_mbps() {
+  awk -v value="$1" 'BEGIN { printf "%.1f Mbps", value / 1000000 }'
+}
+
+endpoint_count=0
+old_ifs="$IFS"
+IFS='|'
+for endpoint in $ENDPOINTS; do
+  [ -n "$endpoint" ] || continue
+  endpoint_count=$((endpoint_count + 1))
+  sample_file="$WORK_DIR/endpoint_${endpoint_count}.tsv"
+  : > "$sample_file"
+  sample=1
+  while [ "$sample" -le "$SAMPLES" ]; do
+    metrics=$(curl_with_proxy -L --http1.1 -sS -o /dev/null \
+      --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
+      -w '%{http_code}\t%{time_namelookup}\t%{time_connect}\t%{time_appconnect}\t%{time_starttransfer}\t%{time_total}\t%{size_download}\t%{speed_download}' \
+      "$endpoint" 2>/dev/null)
+    curl_exit=$?
+    if [ "$curl_exit" -eq 0 ]; then
+      http_code=000
+      dns=0
+      connect=0
+      tls=0
+      first_byte=0
+      total=0
+      bytes=0
+      speed=0
+      IFS='	' read -r http_code dns connect tls first_byte total bytes speed <<EOF
+$metrics
+EOF
+      case "$http_code" in
+        [0-9][0-9][0-9]) ;;
+        *) curl_exit=1; http_code=000 ;;
+      esac
+    else
+      http_code=000
+      dns=0
+      connect=0
+      tls=0
+      first_byte=0
+      total=0
+      bytes=0
+      speed=0
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$curl_exit" "$http_code" "$dns" "$connect" "$tls" "$first_byte" "$total" "$bytes" "$speed" >> "$sample_file"
+    sample=$((sample + 1))
+  done
+done
+IFS="$old_ifs"
+
+[ "$endpoint_count" -gt 0 ] || die "no endpoints configured"
+
+bandwidth_speed=0
+bandwidth_code=000
+bandwidth_valid=0
+if [ "$RUN_BANDWIDTH" -eq 1 ]; then
+  bandwidth_metrics=$(curl_with_proxy -L --http1.1 -sS -o /dev/null \
+    --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
+    -w '%{http_code}\t%{size_download}\t%{speed_download}' \
+    "$BANDWIDTH_URL" 2>/dev/null)
+  bandwidth_exit=$?
+  if [ "$bandwidth_exit" -eq 0 ]; then
+    bandwidth_code=000
+    bandwidth_bytes=0
+    bandwidth_speed=0
+    IFS='	' read -r bandwidth_code bandwidth_bytes bandwidth_speed <<EOF
+$bandwidth_metrics
+EOF
+    case "$bandwidth_code" in
+      2[0-9][0-9])
+        if awk -v bytes="$bandwidth_bytes" -v speed="$bandwidth_speed" 'BEGIN { exit !(bytes > 0 && speed > 0) }'; then
+          bandwidth_valid=1
+        fi
+        ;;
+    esac
+  fi
+  if [ "$bandwidth_valid" -eq 0 ]; then
+    bandwidth_bytes=0
+    bandwidth_speed=0
+  fi
+else
+  bandwidth_exit=0
+  bandwidth_bytes=0
+fi
+
+system_interface=""
+system_rtt=""
+system_throughput=""
+system_proxy_state=""
+if [ "$RUN_SYSTEM" -eq 1 ] && command -v networkQuality >/dev/null 2>&1; then
+  system_file="$WORK_DIR/networkQuality.json"
+  networkQuality -c -u -M "$TIMEOUT" > "$system_file" 2>/dev/null || true
+  system_interface=$(sed -n 's/.*"interface_name" *: *"\([^"]*\)".*/\1/p' "$system_file" | head -n 1)
+  system_rtt=$(sed -n 's/.*"base_rtt" *: *\([0-9.]*\).*/\1/p' "$system_file" | head -n 1)
+  system_throughput=$(sed -n 's/.*"dl_throughput" *: *\([0-9.]*\).*/\1/p' "$system_file" | head -n 1)
+  system_proxy_state=$(sed -n 's/.*"proxy_state" *: *"\([^"]*\)".*/\1/p' "$system_file" | head -n 1)
+fi
+
+reachable_count=0
+primary_ttfb=0
+primary_jitter=0
+primary_http="000"
+primary_ok_count=0
+primary_success_rate=0
+endpoint_json="$WORK_DIR/endpoint.jsonl"
+: > "$endpoint_json"
+
+index=1
+IFS='|'
+for endpoint in $ENDPOINTS; do
+  [ -n "$endpoint" ] || continue
+  sample_file="$WORK_DIR/endpoint_${index}.tsv"
+  ok_count=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$sample_file")
+  success_rate=$(awk -v ok="$ok_count" -v total="$SAMPLES" 'BEGIN { printf "%.0f", ok * 100 / total }')
+  [ "$ok_count" -gt 0 ] && reachable_count=$((reachable_count + 1))
+  ttfb_median=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/ttfb_${index}"; median_file "$WORK_DIR/ttfb_${index}")
+  ttfb_p95=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/ttfb_p95_${index}"; p95_file "$WORK_DIR/ttfb_p95_${index}")
+  jitter=$(awk -v median="$ttfb_median" 'BEGIN { total = 0; count = 0 } { if ($1 == 0 && $2 != "000" && $2 != "407") { total += ($6 * 1000 - median) * ($6 * 1000 - median); count++ } } END { if (count == 0) print 0; else print sqrt(total / count) }' "$sample_file")
+  observed_http=$(awk '$2 != "000" { print $2; exit }' "$sample_file")
+  [ -n "$observed_http" ] || observed_http="000"
+  if [ "$index" -eq 1 ]; then
+    primary_ttfb="$ttfb_median"
+    primary_jitter="$jitter"
+    primary_ok_count="$ok_count"
+    primary_success_rate="$success_rate"
+    primary_http="$observed_http"
+  fi
+  escaped_endpoint=$(json_escape "$(redact_endpoint "$endpoint")")
+  printf '{"url":"%s","reachable":%s,"http_code":"%s","samples":%s,"successful_samples":%s,"success_rate_pct":%s,"ttfb_median_ms":%s,"ttfb_p95_ms":%s,"jitter_ms":%s}\n' \
+    "$escaped_endpoint" "$([ "$ok_count" -gt 0 ] && printf true || printf false)" "$observed_http" "$SAMPLES" "$ok_count" "$success_rate" "$ttfb_median" "$ttfb_p95" "$jitter" >> "$endpoint_json"
+  index=$((index + 1))
+done
+IFS="$old_ifs"
+
+overall="blocked"
+overall_reason="No tested endpoint returned an HTTP response."
+if [ "$primary_http" = "407" ]; then
+  overall_reason="The proxy requires authentication (HTTP 407), so the service endpoint was not reached."
+fi
+if [ "$reachable_count" -gt 0 ]; then
+  if [ "$primary_ok_count" -eq 0 ] || [ $((primary_ok_count * 100)) -lt $((SAMPLES * 60)) ]; then
+    overall="poor"
+    overall_reason="The primary service path is intermittent or unavailable for most samples."
+  elif [ "$primary_ok_count" -lt "$SAMPLES" ]; then
+    overall="fair"
+    overall_reason="The proxy path is reachable, but one or more sampled requests failed."
+  elif awk -v ttfb="$primary_ttfb" -v jitter="$primary_jitter" 'BEGIN { exit !(ttfb > 0 && ttfb < 800 && jitter < 1000) }'; then
+    overall="good"
+    overall_reason="The proxy path is reachable with acceptable first-byte latency and jitter."
+  elif awk -v ttfb="$primary_ttfb" 'BEGIN { exit !(ttfb > 0 && ttfb < 3000) }'; then
+    overall="fair"
+    overall_reason="The proxy path is usable, but interactive Codex responses may feel delayed."
+  else
+    overall="poor"
+    overall_reason="The proxy path is reachable but has high latency or unstable responses."
+  fi
+fi
+
+proxy_text=$(proxy_summary)
+timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+render_human() {
+  cat <<EOF
+ipcheck v$VERSION
+Time (UTC): $timestamp
+Proxy: $proxy_text
+
+Service path
+EOF
+  index=1
+  IFS='|'
+  for endpoint in $ENDPOINTS; do
+    [ -n "$endpoint" ] || continue
+    sample_file="$WORK_DIR/endpoint_${index}.tsv"
+    ttfb_median=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/h_ttfb_${index}"; median_file "$WORK_DIR/h_ttfb_${index}")
+    ttfb_p95=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/h_ttfb_p95_${index}"; p95_file "$WORK_DIR/h_ttfb_p95_${index}")
+    jitter=$(awk -v median="$ttfb_median" 'BEGIN { total = 0; count = 0 } { if ($1 == 0 && $2 != "000" && $2 != "407") { total += ($6 * 1000 - median) * ($6 * 1000 - median); count++ } } END { if (count == 0) print 0; else print sqrt(total / count) }' "$sample_file")
+    ok_count=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$sample_file")
+    http_code=$(awk '$2 != "000" { print $2; exit }' "$sample_file")
+    [ -n "$http_code" ] || http_code="000"
+    display_endpoint=$(redact_endpoint "$endpoint")
+    if [ "$ok_count" -gt 0 ]; then
+      printf '  OK   %-42s HTTP %s, samples %s/%s, median TTFB %s, p95 %s, jitter %s\n' "$display_endpoint" "$http_code" "$ok_count" "$SAMPLES" "$(format_ms "$ttfb_median")" "$(format_ms "$ttfb_p95")" "$(format_ms "$jitter")"
+    elif [ "$http_code" = "407" ]; then
+      printf '  AUTH %-42s HTTP 407, proxy authentication required\n' "$display_endpoint"
+    else
+      printf '  FAIL %-42s no HTTP response\n' "$display_endpoint"
+    fi
+    index=$((index + 1))
+  done
+  IFS="$old_ifs"
+  printf '\nReference bandwidth\n'
+  if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
+    printf '  Cloudflare download: %s (HTTP %s; reference only, not an OpenAI endpoint)\n' "$(format_mbps "$bandwidth_speed")" "$bandwidth_code"
+  else
+    printf '  skipped or unavailable\n'
+  fi
+  if [ -n "$system_throughput" ]; then
+    printf '  macOS networkQuality: %s, RTT %.1f ms, interface %s' "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
+    [ -n "$system_proxy_state" ] && printf ', proxy=%s' "$system_proxy_state"
+    printf '\n'
+  fi
+  printf '\nResult: %s\n%s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
+  printf 'Interpretation: for Codex, first-byte latency and jitter matter more than raw bandwidth.\n'
+  printf 'HTTP 401/403 still counts as reachable; it usually means the endpoint requires authentication.\n'
+}
+
+render_markdown() {
+  printf '# ipcheck: Codex Network Check\n\n'
+  printf -- '- Time (UTC): `%s`\n' "$timestamp"
+  printf -- '- Proxy: `%s`\n' "$proxy_text"
+  printf -- '- Result: **%s** — %s\n\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
+  printf '| Endpoint | Reachable | HTTP | Successful samples | Median TTFB | P95 TTFB | Jitter |\n|---|---:|---:|---:|---:|---:|---:|\n'
+  cat "$endpoint_json" | while IFS= read -r line; do
+    url=$(printf '%s' "$line" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+    reachable=$(printf '%s' "$line" | sed -n 's/.*"reachable":\([^,]*\).*/\1/p')
+    http_code=$(printf '%s' "$line" | sed -n 's/.*"http_code":"\([^"]*\)".*/\1/p')
+    samples=$(printf '%s' "$line" | sed -n 's/.*"samples":\([0-9]*\).*/\1/p')
+    successful_samples=$(printf '%s' "$line" | sed -n 's/.*"successful_samples":\([0-9]*\).*/\1/p')
+    ttfb=$(printf '%s' "$line" | sed -n 's/.*"ttfb_median_ms":\([^,]*\).*/\1/p')
+    p95=$(printf '%s' "$line" | sed -n 's/.*"ttfb_p95_ms":\([^,]*\).*/\1/p')
+    jitter=$(printf '%s' "$line" | sed -n 's/.*"jitter_ms":\([^,}]*\).*/\1/p')
+    printf '| `%s` | %s | %s | %s/%s | %.0f ms | %.0f ms | %.0f ms |\n' "$url" "$reachable" "$http_code" "$successful_samples" "$samples" "$ttfb" "$p95" "$jitter"
+  done
+  if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
+    printf '\nReference bandwidth: **%s** (Cloudflare; not an OpenAI endpoint).\n' "$(format_mbps "$bandwidth_speed")"
+  fi
+  if [ -n "$system_throughput" ]; then
+    printf 'macOS networkQuality: **%s**, RTT %.1f ms, interface `%s`.\n' "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
+  fi
+}
+
+render_json() {
+  endpoints_json=$(awk 'NR > 1 { printf "," } { printf "%s", $0 }' "$endpoint_json")
+  printf '{"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"proxy_state":"%s"},"endpoints":[%s]}\n' \
+    "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
+    "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" \
+    "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" \
+    "$([ -n "$system_throughput" ] && printf true || printf false)" "$(json_escape "$system_interface")" "${system_rtt:-0}" "${system_throughput:-0}" "$(json_escape "$system_proxy_state")" \
+    "$endpoints_json"
+}
+
+case "$MODE" in
+  human) render_human ;;
+  markdown) render_markdown ;;
+  json) render_json ;;
+esac
+
+[ "$overall" = "blocked" ] && exit 1
+exit 0

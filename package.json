@@ -1,0 +1,47 @@
+{
+  "name": "@jacklv-coder/ipcheck",
+  "version": "0.2.0",
+  "description": "Diagnose the proxy and network path used by Codex and OpenAI endpoints.",
+  "license": "Apache-2.0",
+  "author": "Jintao",
+  "homepage": "https://github.com/jacklv-coder/ipcheck#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/jacklv-coder/ipcheck.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jacklv-coder/ipcheck/issues"
+  },
+  "bin": {
+    "ipcheck": "bin/ipcheck"
+  },
+  "files": [
+    "bin/",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "scripts": {
+    "test": "bash test/smoke.sh",
+    "prepublishOnly": "bash test/smoke.sh"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "network",
+    "proxy",
+    "latency",
+    "diagnostics",
+    "cli"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
