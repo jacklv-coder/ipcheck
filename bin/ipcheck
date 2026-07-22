@@ -1388,13 +1388,13 @@ render_markdown() {
     printf '| 方向 | 速度 | 评级 | 测试数据 |\n|---|---:|---|---|\n'
     if [ "$bandwidth_valid" -eq 1 ]; then printf '| 下载 | %s | %s | Cloudflare，最多 2 MB |\n' "$(format_mbps "$bandwidth_speed")" "$(localized_bandwidth_rating "$download_rating")"; else printf '| 下载 | — | 不可用或已跳过 | — |\n'; fi
     if [ "$upload_valid" -eq 1 ]; then printf '| 上传 | %s | %s | Cloudflare，最多 1 MB 零字节 |\n' "$(format_mbps "$upload_speed")" "$(localized_bandwidth_rating "$upload_rating")"; else printf '| 上传 | — | 不可用或已跳过 | — |\n'; fi
-    printf '\n- 测速路径：`%s`\n- 建议：%s\n' "$proxy_text" "$bandwidth_advice"
+    printf '\n- 测速路径：%s%s%s\n- 建议：%s\n' '`' "$proxy_text" '`' "$bandwidth_advice"
   else
     printf '\n## Network bandwidth\n\n'
     printf '| Direction | Speed | Rating | Test data |\n|---|---:|---|---|\n'
     if [ "$bandwidth_valid" -eq 1 ]; then printf '| Download | %s | %s | Cloudflare, up to 2 MB |\n' "$(format_mbps "$bandwidth_speed")" "$(localized_bandwidth_rating "$download_rating")"; else printf '| Download | — | unavailable or skipped | — |\n'; fi
     if [ "$upload_valid" -eq 1 ]; then printf '| Upload | %s | %s | Cloudflare, up to 1 MB zero-filled |\n' "$(format_mbps "$upload_speed")" "$(localized_bandwidth_rating "$upload_rating")"; else printf '| Upload | — | unavailable or skipped | — |\n'; fi
-    printf '\n- Test path: `%s`\n- Advice: %s\n' "$proxy_text" "$bandwidth_advice"
+    printf '\n- Test path: %s%s%s\n- Advice: %s\n' '`' "$proxy_text" '`' "$bandwidth_advice"
   fi
   if [ -n "$system_throughput" ]; then
     printf "macOS networkQuality: download **%s**" "$(format_bits_mbps "$system_throughput")"
