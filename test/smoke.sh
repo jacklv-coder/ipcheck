@@ -19,6 +19,7 @@ mkdir -p "$CODEX_FIXTURE" "$CLAUDE_FIXTURE"
 cat > "$STUB_DIR/curl" <<'EOF'
 #!/usr/bin/env bash
 is_bandwidth=0
+is_upload=0
 is_blocked=0
 is_flaky=0
 is_proxy_auth=0
@@ -37,6 +38,7 @@ printf 'env:ALL_PROXY=%s\n' "${ALL_PROXY-}" >> "${IPCHECK_TEST_CURL_LOG:?}"
 for argument in "$@"; do
   printf '%s\n' "$argument" >> "${IPCHECK_TEST_CURL_LOG:?}"
   case "$argument" in
+    *__up*) is_upload=1 ;;
     *speed.cloudflare.com*) is_bandwidth=1 ;;
     *blocked.invalid*) is_blocked=1 ;;
     *flaky.invalid*) is_flaky=1 ;;
@@ -60,9 +62,20 @@ elif [ "$is_proxy_auth" -eq 1 ]; then
   printf '407\t0.001\t0.002\t0.003\t0.050\t0.050\t100\t1000'
 elif [ "$is_blocked" -eq 1 ]; then
   exit 28
+elif [ "$is_upload" -eq 1 ]; then
+  upload_code=${IPCHECK_TEST_UPLOAD_CODE:-200}
+  upload_speed=${IPCHECK_TEST_UPLOAD_SPEED:-2000000}
+  upload_bytes=${IPCHECK_TEST_UPLOAD_BYTES:-1000000}
+  printf '%s\t%s\t%s' "$upload_code" "$upload_bytes" "$upload_speed"
+  upload_exit=${IPCHECK_TEST_UPLOAD_EXIT:-0}
+  [ "$upload_exit" -eq 0 ] || exit "$upload_exit"
 elif [ "$is_bandwidth" -eq 1 ]; then
   bandwidth_code=${IPCHECK_TEST_BANDWIDTH_CODE:-200}
-  printf '%s\t2000000\t10000000' "$bandwidth_code"
+  bandwidth_speed=${IPCHECK_TEST_BANDWIDTH_SPEED:-10000000}
+  bandwidth_bytes=${IPCHECK_TEST_BANDWIDTH_BYTES:-2000000}
+  printf '%s\t%s\t%s' "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed"
+  bandwidth_exit=${IPCHECK_TEST_BANDWIDTH_EXIT:-0}
+  [ "$bandwidth_exit" -eq 0 ] || exit "$bandwidth_exit"
 elif [ "$is_not_found" -eq 1 ]; then
   printf '404\t0.001\t0.002\t0.003\t0.050\t0.050\t100\t1000'
 elif [ "$is_rate_limited" -eq 1 ]; then
@@ -101,6 +114,7 @@ cat <<'JSON'
 {
   "base_rtt" : 25,
   "dl_throughput" : 10000000,
+  "ul_throughput" : 5000000,
   "interface_name" : "en0",
   "proxy_state" : "Non-Proxied"
 }
@@ -158,7 +172,7 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.4.0" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.5.0" ]
 
 : > "$CURL_LOG"
 report=$(ANTHROPIC_AUTH_TOKEN="runtime-secret-must-never-appear" run_ipcheck --samples 3 --no-bandwidth --json)
@@ -259,6 +273,8 @@ printf '%s\n' "$fair_human" | grep -q 'Ready to code? YES, WITH CAUTION'
 chinese_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$chinese_human" | grep -q '现在适合开发吗？适合'
 printf '%s\n' "$chinese_human" | grep -q '当前网络适合进行 AI 辅助开发'
+printf '%s\n' "$chinese_human" | grep -q '^AI 服务延迟$'
+printf '%s\n' "$chinese_human" | grep -q '首字节延迟（TTFB）'
 
 english_override=$(LANG=zh_CN.UTF-8 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$english_override" | grep -q 'Ready to code? YES'
@@ -423,18 +439,50 @@ grep -q '^env:ALL_PROXY=$' "$CURL_LOG"
 
 bandwidth_report=$(run_ipcheck --samples 1 --json)
 printf '%s\n' "$bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":true,"http_code":"200"'
+printf '%s\n' "$bandwidth_report" | grep -q '"download":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":2000000,"bytes_per_second":10000000,"mbps":80.0,"rating":"fast"}'
+printf '%s\n' "$bandwidth_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":1000000,"bytes_per_second":2000000,"mbps":16.0,"rating":"fast"}'
+printf '%s\n' "$bandwidth_report" | grep -q '"upload_payload":"zero-filled"'
+bandwidth_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1)
+printf '%s\n' "$bandwidth_human" | grep -q '^网络带宽$'
+printf '%s\n' "$bandwidth_human" | grep -q '下载  80.0 Mbps.*快.*Cloudflare，最多 2 MB'
+printf '%s\n' "$bandwidth_human" | grep -q '上传  16.0 Mbps.*快.*Cloudflare，最多 1 MB 零字节'
+printf '%s\n' "$bandwidth_human" | grep -q '路径  HTTPS_PROXY=http://127.0.0.1:1080'
+
+slow_upload_human=$(IPCHECK_TEST_UPLOAD_SPEED=100000 IPCHECK_LANG=en run_ipcheck --samples 1)
+printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*0.8 Mbps.*SLOW'
+printf '%s\n' "$slow_upload_human" | grep -q 'Upload is slow; sending large code contexts may take longer.'
 invalid_bandwidth_report=$(IPCHECK_TEST_BANDWIDTH_CODE=407 run_ipcheck --samples 1 --json)
-printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0}'
+printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0,'
+invalid_upload_report=$(IPCHECK_TEST_UPLOAD_CODE=503 run_ipcheck --samples 1 --json)
+printf '%s\n' "$invalid_upload_report" | grep -q '"upload":{"enabled":true,"available":false,"complete":false,"http_code":"503","bytes":0,"bytes_per_second":0,"mbps":0.0,"rating":"unavailable"}'
+
+no_upload_report=$(run_ipcheck --samples 1 --no-upload --json)
+printf '%s\n' "$no_upload_report" | grep -q '"upload":{"enabled":false,"available":false'
+
+partial_upload_report=$(IPCHECK_TEST_UPLOAD_BYTES=500000 IPCHECK_TEST_UPLOAD_EXIT=28 run_ipcheck --samples 1 --json)
+printf '%s\n' "$partial_upload_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":false,"http_code":"200","bytes":500000,"bytes_per_second":2000000,"mbps":16.0,"rating":"partial"}'
+
+partial_download_report=$(IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 run_ipcheck --samples 1 --json)
+printf '%s\n' "$partial_download_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"000","bytes":0,"bytes_per_second":0,'
+printf '%s\n' "$partial_download_report" | grep -q '"download":{"enabled":true,"available":true,"complete":false,"http_code":"200","bytes":500000,"bytes_per_second":10000000,"mbps":80.0,"rating":"partial"}'
+
+partial_human=$(IPCHECK_TEST_UPLOAD_BYTES=500000 IPCHECK_TEST_UPLOAD_EXIT=28 IPCHECK_LANG=en run_ipcheck --samples 1)
+printf '%s\n' "$partial_human" | grep -q 'Upload.*16.0 Mbps.*ESTIMATE'
+printf '%s\n' "$partial_human" | grep -q 'partial estimates and do not prove bandwidth is sufficient'
+partial_markdown=$(IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 IPCHECK_LANG=en run_ipcheck --samples 1 --markdown)
+printf '%s\n' "$partial_markdown" | grep -q '| Download | 80.0 Mbps | ESTIMATE |'
+printf '%s\n' "$partial_markdown" | grep -q 'partial estimates and do not prove bandwidth is sufficient'
 
 grep -Fq -- "--max-time \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
-grep -Fq "networkQuality -c -u -M \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
+grep -Fq "networkQuality -c -s -M \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
 grep -q 'download_bits_per_second' "$PROJECT_DIR/bin/ipcheck"
 grep -q 'value / 1000000' "$PROJECT_DIR/bin/ipcheck"
 
 system_report=$(run_ipcheck --samples 1 --no-bandwidth --system --json)
 printf '%s\n' "$system_report" | grep -q '"download_bits_per_second":10000000'
+printf '%s\n' "$system_report" | grep -q '"upload_bits_per_second":5000000'
 system_human=$(run_ipcheck --samples 1 --no-bandwidth --system)
-printf '%s\n' "$system_human" | grep -q 'macOS networkQuality: 10.0 Mbps'
+printf '%s\n' "$system_human" | grep -q 'macOS networkQuality: down 10.0 Mbps, up 5.0 Mbps'
 
 set +e
 blocked_report=$(run_ipcheck --samples 1 --no-bandwidth --endpoint https://blocked.invalid --json)
@@ -452,10 +500,12 @@ printf '%s\n' "$markdown" | grep -q '| Jitter |'
 chinese_markdown=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --no-bandwidth --markdown)
 printf '%s\n' "$chinese_markdown" | grep -q '^# ipcheck：AI 编程网络报告'
 printf '%s\n' "$chinese_markdown" | grep -q '现在适合开发吗？'
+printf '%s\n' "$chinese_markdown" | grep -q '^## AI 服务延迟（TTFB）$'
 
 quick_report=$(run_ipcheck --quick --json)
 printf '%s\n' "$quick_report" | grep -q '"samples":1'
 printf '%s\n' "$quick_report" | grep -q '"bandwidth":{"enabled":false'
+printf '%s\n' "$quick_report" | grep -q '"upload":{"enabled":false'
 
 set +e
 run_ipcheck --service invalid >/dev/null 2>&1

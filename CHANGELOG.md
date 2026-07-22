@@ -3,6 +3,23 @@
 All notable changes to ipcheck are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-07-22
+
+### Added
+
+- A safe 1 MB zero-filled Cloudflare upload test alongside the existing 2 MB
+  reference download.
+- Separate download/upload ratings, test-path disclosure, and plain-language
+  bandwidth advice in human and Markdown reports.
+- Structured `bandwidth.download` and `bandwidth.upload` JSON objects while
+  preserving the existing download fields for compatibility.
+- `--no-upload` to skip only the upload measurement.
+
+### Changed
+
+- The bandwidth section now clearly separates throughput from AI service TTFB.
+- macOS `networkQuality --system` reports both download and upload throughput.
+
 ## [0.4.0] - 2026-07-22
 
 ### Added
@@ -54,6 +71,7 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[0.5.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jacklv-coder/ipcheck/releases/tag/v0.2.0

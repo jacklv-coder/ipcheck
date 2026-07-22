@@ -16,7 +16,7 @@
 
 ```text
 $ ipcheck --quick
-ipcheck v0.4.0 — AI 编程网络诊断
+ipcheck v0.5.0 — AI 编程网络诊断
 
 开发建议
   现在适合开发吗？可以，但会有些慢
@@ -31,6 +31,11 @@ Service results
   Claude Code  GOOD
 
 Result: GOOD
+
+网络带宽
+  下载  80.0 Mbps    快    Cloudflare，最多 2 MB
+  上传  16.0 Mbps    快    Cloudflare，最多 1 MB 零字节
+  建议  当前带宽足以支持日常 AI 辅助开发。
 ```
 
 ## 核心能力
@@ -61,7 +66,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.4.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.5.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -100,12 +105,23 @@ ipcheck --system
 ipcheck --endpoint https://your-gateway.example.com/health
 ipcheck --lang en
 ipcheck --no-progress --no-color
+ipcheck --no-upload
 ```
 
 终端和 Markdown 报告默认跟随终端/系统语言，目前支持中文和英文。可以使用
 `--lang zh`、`--lang en`，或 `IPCHECK_LANG=zh|en` 明确指定。JSON 的字段名、
 枚举值和诊断原因始终保持英文，方便自动化脚本稳定解析。实时进度只会在普通
 终端报告中写入 stderr，可通过 `IPCHECK_PROGRESS=auto|always|never` 控制。
+
+“服务链路”测量的是首字节延迟和抖动，并不是下载速度。独立的“网络带宽”模块
+会通过报告中注明的代理/网络路径下载最多 2 MB，并上传最多 1 MB 全零测试数据，然后按
+日常开发需求分别评级。带宽不会掩盖 AI 服务本身的高延迟或不稳定。使用
+`--no-upload` 只跳过上传，使用 `--no-bandwidth` 同时跳过下载和上传。
+
+评级采用面向开发场景的阈值：下载达到 25 Mbps 为“快”，达到 5 Mbps 为
+“够用”；上传达到 10 Mbps 为“快”，达到 2 Mbps 为“够用”；低于这些范围为
+“慢”。可选的 `--system` 会交给 macOS `networkQuality` 测试，消耗的数据量
+可能明显高于 ipcheck 自带的限量 Cloudflare 测试。
 
 运行 `ipcheck --help` 可以查看完整参数。
 
