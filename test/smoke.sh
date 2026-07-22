@@ -298,7 +298,7 @@ printf '%s\n' "$chinese_human" | grep -q '首字节延迟（TTFB）'
 english_override=$(LANG=zh_CN.UTF-8 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$english_override" | grep -q 'Ready to code? YES'
 
-unsupported_language=$(PATH="$MINIMAL_BIN" LC_ALL= LC_MESSAGES= LANG=ja_JP.UTF-8 IPCHECK_LANG=auto run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
+unsupported_language=$(PATH="$MINIMAL_BIN" LC_ALL='' LC_MESSAGES='' LANG=ja_JP.UTF-8 IPCHECK_LANG=auto run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$unsupported_language" | grep -q 'Ready to code? YES'
 if printf '%s\n' "$unsupported_language" | grep -q '现在适合开发吗'; then
   printf 'unsupported system language did not fall back to English\n' >&2
