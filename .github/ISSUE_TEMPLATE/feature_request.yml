@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a client, gateway, metric, or workflow improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What diagnostic problem cannot be solved today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: input
+    id: documentation
+    attributes:
+      label: Official client or API documentation
+      description: Link to the documented endpoint, proxy, or configuration behavior.
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and billing considerations
+      description: Explain how the probe can avoid credentials and billable inference.
