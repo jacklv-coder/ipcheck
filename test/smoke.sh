@@ -2,6 +2,10 @@
 
 set -eu
 
+# Keep report-language assertions deterministic regardless of the host locale.
+IPCHECK_LANG=en
+export IPCHECK_LANG
+
 PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck-test.XXXXXX")
 FIXTURE_HOME="$STUB_DIR/home"
@@ -137,7 +141,7 @@ run_ipcheck() {
     -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
     -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
     PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
-    HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+    HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_LANG="${IPCHECK_LANG:-en}" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
     "$PROJECT_DIR/bin/ipcheck" "$@"
 }
 
@@ -148,13 +152,13 @@ run_ipcheck_direct() {
     -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
     -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
     PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
-    IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+    IPCHECK_LANG="${IPCHECK_LANG:-en}" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
     "$PROJECT_DIR/bin/ipcheck" "$@"
 }
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.3.0" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.4.0" ]
 
 : > "$CURL_LOG"
 report=$(ANTHROPIC_AUTH_TOKEN="runtime-secret-must-never-appear" run_ipcheck --samples 3 --no-bandwidth --json)
@@ -169,6 +173,7 @@ printf '%s\n' "$report" | grep -q 'https://dashscope.aliyuncs.com/apps/anthropic
 printf '%s\n' "$report" | grep -q 'https://dashscope.aliyuncs.com/apps/anthropic/v1/messages'
 printf '%s\n' "$report" | grep -q '"credentials_used":false'
 printf '%s\n' "$report" | grep -q '"billable_requests":false'
+printf '%s\n' "$report" | grep -q '"developer_readiness":{"ready":true,"level":"ready"'
 if printf '%s\n' "$report" | grep -Eq 'fixture-secret|runtime-secret'; then
   printf 'Claude credential leaked into JSON report\n' >&2
   exit 1
@@ -246,6 +251,33 @@ printf '%s\n' "$decimal_report" | grep -q '"successful_samples":8'
 
 fair_report=$(IPCHECK_TEST_TTFB=1.000 run_ipcheck --samples 1 --no-bandwidth --endpoint https://fair.invalid --json)
 printf '%s\n' "$fair_report" | grep -q '"result":"fair"'
+printf '%s\n' "$fair_report" | grep -q '"level":"with_caution"'
+
+fair_human=$(IPCHECK_TEST_TTFB=1.000 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://fair.invalid)
+printf '%s\n' "$fair_human" | grep -q 'Ready to code? YES, WITH CAUTION'
+
+chinese_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
+printf '%s\n' "$chinese_human" | grep -q '现在适合开发吗？适合'
+printf '%s\n' "$chinese_human" | grep -q '当前网络适合进行 AI 辅助开发'
+
+english_override=$(LANG=zh_CN.UTF-8 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
+printf '%s\n' "$english_override" | grep -q 'Ready to code? YES'
+
+progress_log="$STUB_DIR/progress.log"
+IPCHECK_PROGRESS=always IPCHECK_LANG=en run_ipcheck --samples 2 --no-bandwidth --endpoint https://progress.invalid >/dev/null 2>"$progress_log"
+grep -q 'sample 1/2' "$progress_log"
+grep -q 'sample 2/2' "$progress_log"
+grep -q 'reachable 2/2' "$progress_log"
+
+json_progress_log="$STUB_DIR/json-progress.log"
+IPCHECK_PROGRESS=always run_ipcheck --samples 1 --no-bandwidth --json > /dev/null 2>"$json_progress_log"
+[ ! -s "$json_progress_log" ]
+
+colored_human=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --color --endpoint https://color.invalid)
+case "$colored_human" in
+  *"$(printf '\033[32m')"*) ;;
+  *) printf 'forced color output did not contain ANSI color codes\n' >&2; exit 1 ;;
+esac
 
 attempt_file="$STUB_DIR/attempt"
 printf 0 > "$attempt_file"
@@ -260,14 +292,25 @@ printf '%s\n' "$not_found_report" | grep -q 'configured API route returned HTTP 
 
 rate_limit_report=$(run_ipcheck --samples 1 --no-bandwidth --endpoint https://rate-limit.invalid --json)
 printf '%s\n' "$rate_limit_report" | grep -q '"result":"fair"'
+printf '%s\n' "$rate_limit_report" | grep -q '"ready":false,"level":"temporarily_unavailable"'
 server_error_report=$(run_ipcheck --samples 1 --no-bandwidth --endpoint https://server-error.invalid --json)
 printf '%s\n' "$server_error_report" | grep -q '"result":"fair"'
+printf '%s\n' "$server_error_report" | grep -q '"ready":false,"level":"temporarily_unavailable"'
+
+server_error_progress="$STUB_DIR/server-error-progress.log"
+IPCHECK_PROGRESS=always run_ipcheck --samples 1 --no-bandwidth --endpoint https://server-error.invalid >/dev/null 2>"$server_error_progress"
+grep -q '! Custom · Custom endpoint 1 — HTTP 503, reachable 1/1' "$server_error_progress"
+if grep -q '✓ Custom · Custom endpoint 1' "$server_error_progress"; then
+  printf 'server error was incorrectly shown as successful progress\n' >&2
+  exit 1
+fi
 
 mixed_status_file="$STUB_DIR/mixed-status-attempt"
 printf 0 > "$mixed_status_file"
 mixed_status_report=$(IPCHECK_TEST_MIXED_FILE="$mixed_status_file" run_ipcheck --samples 2 --no-bandwidth --endpoint https://mixed-status.invalid --json)
 printf '%s\n' "$mixed_status_report" | grep -q '"result":"fair"'
 printf '%s\n' "$mixed_status_report" | grep -q 'at least one sample returned a server error'
+printf '%s\n' "$mixed_status_report" | grep -q '"ready":true,"level":"with_caution"'
 
 precedence_report=$(CODEX_NETWORK_ENDPOINTS="https://blocked.invalid" run_ipcheck --samples 1 --no-bandwidth --endpoint https://cli.invalid --json)
 printf '%s\n' "$precedence_report" | grep -q '"url":"https://cli.invalid"'
@@ -405,6 +448,10 @@ markdown=$(run_ipcheck --samples 1 --no-bandwidth --markdown)
 printf '%s\n' "$markdown" | grep -q '^# ipcheck: AI Coding Network Report'
 printf '%s\n' "$markdown" | grep -q '| Claude Code |'
 printf '%s\n' "$markdown" | grep -q '| Jitter |'
+
+chinese_markdown=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --no-bandwidth --markdown)
+printf '%s\n' "$chinese_markdown" | grep -q '^# ipcheck：AI 编程网络报告'
+printf '%s\n' "$chinese_markdown" | grep -q '现在适合开发吗？'
 
 quick_report=$(run_ipcheck --quick --json)
 printf '%s\n' "$quick_report" | grep -q '"samples":1'
