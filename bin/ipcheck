@@ -311,11 +311,13 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck.XXXXXX") || die "cannot create a t
 # Preserve the caller's stderr so signal feedback is not swallowed by a
 # per-command `2>/dev/null` redirection active when the trap runs.
 exec 3>&2
+# shellcheck disable=SC2317 # Invoked indirectly by the EXIT trap.
 cleanup() {
   rm -rf "$WORK_DIR"
 }
 
 ACTIVE_CHILD_PID=""
+# shellcheck disable=SC2317 # Invoked indirectly by signal handlers.
 stop_active_child() {
   stop_signal="$1"
   if [ -n "$ACTIVE_CHILD_PID" ]; then
@@ -325,6 +327,7 @@ stop_active_child() {
   fi
 }
 
+# shellcheck disable=SC2317 # Invoked indirectly by the INT trap.
 cancel_run() {
   cancel_status="$1"
   trap - INT
@@ -342,6 +345,7 @@ cancel_run() {
   exit "$cancel_status"
 }
 
+# shellcheck disable=SC2317 # Invoked indirectly by the TERM trap.
 terminate_run() {
   trap - TERM
   stop_active_child TERM
