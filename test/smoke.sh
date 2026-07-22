@@ -2,7 +2,7 @@
 
 set -eu
 
-PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck-test.XXXXXX")
 FIXTURE_HOME="$STUB_DIR/home"
 CODEX_FIXTURE="$FIXTURE_HOME/.codex"
@@ -383,8 +383,8 @@ printf '%s\n' "$bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"availa
 invalid_bandwidth_report=$(IPCHECK_TEST_BANDWIDTH_CODE=407 run_ipcheck --samples 1 --json)
 printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0}'
 
-grep -q -- '--max-time "$TIMEOUT"' "$PROJECT_DIR/bin/ipcheck"
-grep -q 'networkQuality -c -u -M "$TIMEOUT"' "$PROJECT_DIR/bin/ipcheck"
+grep -Fq -- "--max-time \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
+grep -Fq "networkQuality -c -u -M \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
 grep -q 'download_bits_per_second' "$PROJECT_DIR/bin/ipcheck"
 grep -q 'value / 1000000' "$PROJECT_DIR/bin/ipcheck"
 
@@ -415,5 +415,13 @@ run_ipcheck --service invalid >/dev/null 2>&1
 invalid_exit=$?
 set -e
 [ "$invalid_exit" -eq 2 ]
+
+for numeric_option in --samples --timeout; do
+  set +e
+  run_ipcheck "$numeric_option" 9223372036854775808 >/dev/null 2>&1
+  invalid_exit=$?
+  set -e
+  [ "$invalid_exit" -eq 2 ]
+done
 
 printf 'ipcheck smoke tests: ok\n'

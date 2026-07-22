@@ -98,13 +98,17 @@ while [ "$#" -gt 0 ]; do
       ;;
     --samples)
       [ "$#" -ge 2 ] || die "--samples requires a number"
-      is_integer "$2" && [ "$2" -gt 0 ] || die "--samples must be a positive integer"
+      if ! is_integer "$2" || ! [ "$2" -gt 0 ] 2>/dev/null; then
+        die "--samples must be a positive integer"
+      fi
       SAMPLES=$(printf '%s\n' "$2" | sed 's/^0*//')
       shift
       ;;
     --timeout)
       [ "$#" -ge 2 ] || die "--timeout requires a number"
-      is_integer "$2" && [ "$2" -gt 0 ] || die "--timeout must be a positive integer"
+      if ! is_integer "$2" || ! [ "$2" -gt 0 ] 2>/dev/null; then
+        die "--timeout must be a positive integer"
+      fi
       TIMEOUT=$(printf '%s\n' "$2" | sed 's/^0*//')
       shift
       ;;
@@ -308,9 +312,9 @@ CODEX_CONFIG="$CODEX_HOME_PATH/config.toml"
 CLAUDE_CONFIG_PATH="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CLAUDE_SETTINGS="$CLAUDE_CONFIG_PATH/settings.json"
 if [ -n "${CLAUDE_CONFIG_DIR-}" ]; then
-  CLAUDE_SETTINGS_SOURCE='${CLAUDE_CONFIG_DIR}/settings.json'
+  CLAUDE_SETTINGS_SOURCE="\${CLAUDE_CONFIG_DIR}/settings.json"
 else
-  CLAUDE_SETTINGS_SOURCE="~/.claude/settings.json"
+  CLAUDE_SETTINGS_SOURCE="\$HOME/.claude/settings.json"
 fi
 
 if [ "$SERVICE_MODE" = "auto" ]; then
@@ -497,9 +501,9 @@ curl_for_service() {
     if [ "$https_proxy_env_found" -eq 0 ] && [ -n "$claude_http_proxy" ]; then
       HTTPS_PROXY="$claude_http_proxy" https_proxy="$claude_http_proxy" \
         HTTP_PROXY="$claude_http_proxy" http_proxy="$claude_http_proxy" \
-        ALL_PROXY= all_proxy= command curl -q "$@"
+        ALL_PROXY='' all_proxy='' command curl -q "$@"
     else
-      ALL_PROXY= all_proxy= command curl -q "$@"
+      ALL_PROXY='' all_proxy='' command curl -q "$@"
     fi
   elif [ -n "$system_curl_proxy" ] && [ "$service" != "claude" ]; then
     command curl -q --proxy "$system_curl_proxy" "$@"
@@ -840,14 +844,14 @@ EOF
 
 render_markdown() {
   printf '# ipcheck: AI Coding Network Report\n\n'
-  printf -- '- Time (UTC): `%s`\n' "$timestamp"
-  printf -- '- Proxy: `%s`\n' "$proxy_text"
+  printf -- "- Time (UTC): \`%s\`\n" "$timestamp"
+  printf -- "- Proxy: \`%s\`\n" "$proxy_text"
   printf -- '- Result: **%s** — %s\n\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
   printf '## Detected clients\n\n'
   printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
   while IFS="$TAB" read -r service display model base source; do
     result=$(awk -F '\t' -v service="$service" '$1 == service { print $2; exit }' "$SERVICE_RESULT_FILE")
-    printf '| %s | `%s` | `%s` | %s | **%s** |\n' "$display" "$model" "$base" "$source" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')"
+    printf "| %s | \`%s\` | \`%s\` | %s | **%s** |\n" "$display" "$model" "$base" "$source" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')"
   done < "$SERVICES_FILE"
   if [ -s "$WARNINGS_FILE" ]; then
     printf '\n## Warnings\n\n'
@@ -873,7 +877,7 @@ render_markdown() {
     printf '\nReference bandwidth: **%s** (Cloudflare; not a model endpoint).\n' "$(format_mbps "$bandwidth_speed")"
   fi
   if [ -n "$system_throughput" ]; then
-    printf 'macOS networkQuality: **%s**, RTT %.1f ms, interface `%s`.\n' "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
+    printf "macOS networkQuality: **%s**, RTT %.1f ms, interface \`%s\`.\n" "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
   fi
   printf '\n> ipcheck does not read or transmit API keys and does not make billable model requests.\n'
 }
