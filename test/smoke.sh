@@ -199,7 +199,7 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.7.0" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.8.0" ]
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q -- '--explain-score'
 
 : > "$CURL_LOG"
@@ -347,8 +347,13 @@ printf '%s\n' "$fair_human" | grep -q 'Ready to code? YES, WITH CAUTION'
 chinese_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$chinese_human" | grep -q '现在适合开发吗？适合'
 printf '%s\n' "$chinese_human" | grep -q '当前网络适合进行 AI 辅助开发'
-printf '%s\n' "$chinese_human" | grep -q '^AI 服务延迟$'
-printf '%s\n' "$chinese_human" | grep -q '首字节延迟（TTFB）'
+printf '%s\n' "$chinese_human" | grep -q '◆ AI 服务延迟'
+printf '%s\n' "$chinese_human" | grep -q 'TTFB：中位/P95'
+printf '%s\n' "$chinese_human" | grep -q '✓ 可达'
+if printf '%s\n' "$chinese_human" | grep -q '正常.*Custom endpoint'; then
+  printf 'reachable endpoint was misleadingly labelled normal\n' >&2
+  exit 1
+fi
 
 english_override=$(LANG=zh_CN.UTF-8 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$english_override" | grep -q 'Ready to code? YES'
@@ -380,6 +385,19 @@ case "$colored_human" in
   *"$(printf '\033[32m')"*) ;;
   *) printf 'forced color output did not contain ANSI color codes\n' >&2; exit 1 ;;
 esac
+
+plain_human=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-color --endpoint https://plain.invalid)
+case "$plain_human" in
+  *"$(printf '\033[')"*) printf 'no-color output contained ANSI escape codes\n' >&2; exit 1 ;;
+esac
+printf '%s\n' "$plain_human" | grep -q '█'
+
+narrow_human=$(COLUMNS=70 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-color --endpoint https://narrow.invalid)
+printf '%s\n' "$narrow_human" | grep -q '^    HTTP 401 · 1/1 · median'
+printf '%s\n' "$narrow_human" | grep -q '█████████████░'
+
+wide_human=$(COLUMNS=120 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-color --endpoint https://wide.invalid)
+printf '%s\n' "$wide_human" | grep -q '✓ REACH.*HTTP 401.*median'
 
 attempt_file="$STUB_DIR/attempt"
 printf 0 > "$attempt_file"
@@ -533,22 +551,26 @@ printf '%s\n' "$bandwidth_report" | grep -q '"download":{"enabled":true,"availab
 printf '%s\n' "$bandwidth_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":1000000,"bytes_per_second":2000000,"mbps":16.0,"rating":"fast"}'
 printf '%s\n' "$bandwidth_report" | grep -q '"upload_payload":"zero-filled"'
 bandwidth_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1)
-printf '%s\n' "$bandwidth_human" | grep -q '^网络带宽$'
-printf '%s\n' "$bandwidth_human" | grep -q '开发适配分：100/100 · 舒适'
+printf '%s\n' "$bandwidth_human" | grep -q '◆ 网络带宽'
+printf '%s\n' "$bandwidth_human" | grep -q '100/100.*舒适'
 printf '%s\n' "$bandwidth_human" | grep -q '下载  80.0 Mbps.*快.*Cloudflare，最多 2 MB'
 printf '%s\n' "$bandwidth_human" | grep -q '上传  16.0 Mbps.*快.*Cloudflare，最多 1 MB 零字节'
 printf '%s\n' "$bandwidth_human" | grep -q '路径  HTTPS_PROXY=http://127.0.0.1:1080'
 score_explanation=$(IPCHECK_LANG=en run_ipcheck --samples 1 --explain-score)
-printf '%s\n' "$score_explanation" | grep -q 'Score breakdown: service path 90/90 (reachability 35 + TTFB 35 + P95 10 + jitter 10); download 5 (FAST); upload 5 (FAST); total 100.'
+printf '%s\n' "$score_explanation" | grep -q '^  Score breakdown$'
+printf '%s\n' "$score_explanation" | grep -q 'Service path.*90/90.*reachability 35.*TTFB 35.*P95 10.*jitter 10'
+printf '%s\n' "$score_explanation" | grep -q 'Download.*+5.*80.0 Mbps.*FAST'
+printf '%s\n' "$score_explanation" | grep -q 'Upload.*+5.*16.0 Mbps.*FAST'
 score_explanation_zh=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --markdown --explain-score)
 printf '%s\n' "$score_explanation_zh" | grep -q '评分依据：服务链路 90/90（可达性 35 + TTFB 35 + P95 10 + 抖动 10）；下载 5（快）；上传 5（快）；限幅前 100；结论上限 100；总分 100。'
 score_explanation_without_bandwidth=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --explain-score)
-printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Score breakdown: service path 90/90 (reachability 35 + TTFB 35 + P95 10 + jitter 10); download 0 (UNAVAILABLE); upload 0 (UNAVAILABLE); total 90.'
+printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Download.*0.*0.0 Mbps.*UNAVAILABLE'
+printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Upload.*0.*0.0 Mbps.*UNAVAILABLE'
 
 slow_upload_human=$(IPCHECK_TEST_UPLOAD_SPEED=100000 IPCHECK_LANG=en run_ipcheck --samples 1 --explain-score)
 printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*0.8 Mbps.*SLOW'
-printf '%s\n' "$slow_upload_human" | grep -q 'Readiness score: 90/100 · COMFORTABLE'
-printf '%s\n' "$slow_upload_human" | grep -q 'upload -5 (SLOW); total 90.'
+printf '%s\n' "$slow_upload_human" | grep -q '90/100.*COMFORTABLE'
+printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*-5.*0.8 Mbps.*SLOW'
 printf '%s\n' "$slow_upload_human" | grep -q 'Upload is slow; sending large code contexts may take longer.'
 invalid_bandwidth_report=$(IPCHECK_TEST_BANDWIDTH_CODE=407 run_ipcheck --samples 1 --json)
 printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0,'

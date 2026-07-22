@@ -12,34 +12,31 @@
 **Claude Code** 的真实网络路径。它会自动识别本机客户端以及不含密钥的路由
 配置，测量可达性、首字节延迟（TTFB）中位数/P95、抖动和参考带宽，并给出
 明确的 `GOOD`、`FAIR`、`POOR` 或 `BLOCKED` 结论。交互运行时会显示带颜色的
-实时进度，支持通过 `Ctrl+C` 友好取消，并直接告诉你“现在是否适合开发”以及
-规则化的开发适配分。
+动态进度，支持通过 `Ctrl+C` 友好取消，并用自适应终端仪表盘直接告诉你
+“现在是否适合开发”以及规则化的开发适配分。
 
 ![ipcheck 中文终端动态演示](assets/ipcheck-demo-zh.gif)
 
 ```text
 $ ipcheck
-ipcheck v0.7.0 — AI 编程网络诊断
+ipcheck v0.8.0  AI 编程网络体检
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-开发建议
-  现在适合开发吗？适合
-  开发适配分：100/100 · 舒适
+  ✓  现在适合开发吗？适合
+  100/100  ████████████████████  舒适
+
   当前网络适合进行 AI 辅助开发。
 
-Detected clients
-  Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
-  Claude Code  model=deepseek-v4-flash, route=https://dashscope.aliyuncs.com/apps/anthropic
+◆ AI 服务延迟
+  ✓ 可达  ChatGPT              Codex       HTTP 401 · 中位 260 ms
+  ✓ 可达  Claude Messages API  Claude Code HTTP 403 · 中位 220 ms
 
-Service results
-  Codex        GOOD
-  Claude Code  GOOD
+◆ AI 服务结论
+  ● Codex 良好  ·  ● Claude Code 良好
 
-Result: GOOD
-
-网络带宽
+◆ 网络带宽
   下载  80.0 Mbps    快    Cloudflare，最多 2 MB
   上传  16.0 Mbps    快    Cloudflare，最多 1 MB 零字节
-  建议  当前带宽足以支持日常 AI 辅助开发。
 ```
 
 ## 核心能力
@@ -70,7 +67,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.7.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
