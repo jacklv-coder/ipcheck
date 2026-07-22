@@ -18,7 +18,7 @@ a direct answer plus a rule-based readiness score.
 
 ```text
 $ ipcheck
-ipcheck v0.6.0 — AI coding network diagnostics
+ipcheck v0.6.1 — AI coding network diagnostics
 
 Developer verdict
   Ready to code? YES
@@ -74,7 +74,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.6.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.6.1/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -119,7 +119,8 @@ ipcheck --no-upload
 ```
 
 The human and Markdown reports default to the terminal/system language.
-English and Simplified Chinese are currently supported. Override detection with
+English and Simplified Chinese are currently supported. Any unsupported system
+language falls back to English. Override detection with
 `--lang en`, `--lang zh`, or `IPCHECK_LANG=en|zh`. JSON field names, enum values,
 and diagnostic reasons remain stable English for automation. Progress is written
 to stderr only for human output and can be controlled with
@@ -259,4 +260,4 @@ for release history.
 
 ## License
 
-Apache-2.0
+MIT

@@ -3,6 +3,13 @@
 All notable changes to ipcheck are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-07-22
+
+### Changed
+
+- Relicensed the project from Apache-2.0 to the simpler permissive MIT License.
+- Documented and tested that unsupported system languages fall back to English.
+
 ## [0.6.0] - 2026-07-22
 
 ### Added
@@ -80,6 +87,7 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[0.6.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.3.0...v0.4.0

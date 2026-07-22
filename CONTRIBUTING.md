@@ -53,4 +53,4 @@ A new built-in probe should:
 4. Distinguish network reachability from an invalid protocol route.
 5. Add stub tests for success, timeout, proxy authentication, and redaction.
 
-By contributing, you agree that your contribution is licensed under Apache-2.0.
+By contributing, you agree that your contribution is licensed under the MIT License.
