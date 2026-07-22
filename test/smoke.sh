@@ -18,6 +18,7 @@ mkdir -p "$CODEX_FIXTURE" "$CLAUDE_FIXTURE"
 
 cat > "$STUB_DIR/curl" <<'EOF'
 #!/usr/bin/env bash
+[ -z "${IPCHECK_TEST_CURL_SLEEP:-}" ] || exec sleep "$IPCHECK_TEST_CURL_SLEEP"
 is_bandwidth=0
 is_upload=0
 is_blocked=0
@@ -172,7 +173,7 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.5.0" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.6.0" ]
 
 : > "$CURL_LOG"
 report=$(ANTHROPIC_AUTH_TOKEN="runtime-secret-must-never-appear" run_ipcheck --samples 3 --no-bandwidth --json)
@@ -188,6 +189,7 @@ printf '%s\n' "$report" | grep -q 'https://dashscope.aliyuncs.com/apps/anthropic
 printf '%s\n' "$report" | grep -q '"credentials_used":false'
 printf '%s\n' "$report" | grep -q '"billable_requests":false'
 printf '%s\n' "$report" | grep -q '"developer_readiness":{"ready":true,"level":"ready"'
+printf '%s\n' "$report" | grep -q '"score":90,"score_label":"COMFORTABLE","score_method":"rule_v1"'
 if printf '%s\n' "$report" | grep -Eq 'fixture-secret|runtime-secret'; then
   printf 'Claude credential leaked into JSON report\n' >&2
   exit 1
@@ -266,6 +268,11 @@ printf '%s\n' "$decimal_report" | grep -q '"successful_samples":8'
 fair_report=$(IPCHECK_TEST_TTFB=1.000 run_ipcheck --samples 1 --no-bandwidth --endpoint https://fair.invalid --json)
 printf '%s\n' "$fair_report" | grep -q '"result":"fair"'
 printf '%s\n' "$fair_report" | grep -q '"level":"with_caution"'
+printf '%s\n' "$fair_report" | grep -q '"score":70,"score_label":"USABLE"'
+fair_fast_bandwidth_report=$(IPCHECK_TEST_TTFB=1.000 run_ipcheck --samples 1 --endpoint https://fair.invalid --json)
+printf '%s\n' "$fair_fast_bandwidth_report" | grep -q '"score":75,"score_label":"GOOD"'
+fair_slow_bandwidth_report=$(IPCHECK_TEST_TTFB=1.000 IPCHECK_TEST_BANDWIDTH_SPEED=100000 IPCHECK_TEST_UPLOAD_SPEED=100000 run_ipcheck --samples 1 --endpoint https://fair.invalid --json)
+printf '%s\n' "$fair_slow_bandwidth_report" | grep -q '"score":60,"score_label":"USABLE"'
 
 fair_human=$(IPCHECK_TEST_TTFB=1.000 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://fair.invalid)
 printf '%s\n' "$fair_human" | grep -q 'Ready to code? YES, WITH CAUTION'
@@ -304,6 +311,7 @@ printf '%s\n' "$flaky_report" | grep -q '"successful_samples":1'
 
 not_found_report=$(run_ipcheck --samples 1 --no-bandwidth --endpoint https://not-found.invalid/v1/messages --json)
 printf '%s\n' "$not_found_report" | grep -q '"result":"poor"'
+printf '%s\n' "$not_found_report" | grep -q '"score":35,"score_label":"LIMITED"'
 printf '%s\n' "$not_found_report" | grep -q 'configured API route returned HTTP 404'
 
 rate_limit_report=$(run_ipcheck --samples 1 --no-bandwidth --endpoint https://rate-limit.invalid --json)
@@ -312,6 +320,7 @@ printf '%s\n' "$rate_limit_report" | grep -q '"ready":false,"level":"temporarily
 server_error_report=$(run_ipcheck --samples 1 --no-bandwidth --endpoint https://server-error.invalid --json)
 printf '%s\n' "$server_error_report" | grep -q '"result":"fair"'
 printf '%s\n' "$server_error_report" | grep -q '"ready":false,"level":"temporarily_unavailable"'
+printf '%s\n' "$server_error_report" | grep -q '"score":45,"score_label":"LIMITED"'
 
 server_error_progress="$STUB_DIR/server-error-progress.log"
 IPCHECK_PROGRESS=always run_ipcheck --samples 1 --no-bandwidth --endpoint https://server-error.invalid >/dev/null 2>"$server_error_progress"
@@ -438,18 +447,21 @@ printf '%s\n' "$socks_report" | grep -q 'Claude Code does not document ALL_PROXY
 grep -q '^env:ALL_PROXY=$' "$CURL_LOG"
 
 bandwidth_report=$(run_ipcheck --samples 1 --json)
+printf '%s\n' "$bandwidth_report" | grep -q '"score":95,"score_label":"COMFORTABLE","score_method":"rule_v1"'
 printf '%s\n' "$bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":true,"http_code":"200"'
 printf '%s\n' "$bandwidth_report" | grep -q '"download":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":2000000,"bytes_per_second":10000000,"mbps":80.0,"rating":"fast"}'
 printf '%s\n' "$bandwidth_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":1000000,"bytes_per_second":2000000,"mbps":16.0,"rating":"fast"}'
 printf '%s\n' "$bandwidth_report" | grep -q '"upload_payload":"zero-filled"'
 bandwidth_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1)
 printf '%s\n' "$bandwidth_human" | grep -q '^网络带宽$'
+printf '%s\n' "$bandwidth_human" | grep -q '开发适配分：95/100 · 舒适'
 printf '%s\n' "$bandwidth_human" | grep -q '下载  80.0 Mbps.*快.*Cloudflare，最多 2 MB'
 printf '%s\n' "$bandwidth_human" | grep -q '上传  16.0 Mbps.*快.*Cloudflare，最多 1 MB 零字节'
 printf '%s\n' "$bandwidth_human" | grep -q '路径  HTTPS_PROXY=http://127.0.0.1:1080'
 
 slow_upload_human=$(IPCHECK_TEST_UPLOAD_SPEED=100000 IPCHECK_LANG=en run_ipcheck --samples 1)
 printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*0.8 Mbps.*SLOW'
+printf '%s\n' "$slow_upload_human" | grep -q 'Readiness score: 87/100 · GOOD'
 printf '%s\n' "$slow_upload_human" | grep -q 'Upload is slow; sending large code contexts may take longer.'
 invalid_bandwidth_report=$(IPCHECK_TEST_BANDWIDTH_CODE=407 run_ipcheck --samples 1 --json)
 printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0,'
@@ -461,6 +473,7 @@ printf '%s\n' "$no_upload_report" | grep -q '"upload":{"enabled":false,"availabl
 
 partial_upload_report=$(IPCHECK_TEST_UPLOAD_BYTES=500000 IPCHECK_TEST_UPLOAD_EXIT=28 run_ipcheck --samples 1 --json)
 printf '%s\n' "$partial_upload_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":false,"http_code":"200","bytes":500000,"bytes_per_second":2000000,"mbps":16.0,"rating":"partial"}'
+printf '%s\n' "$partial_upload_report" | grep -q '"score":90,"score_label":"COMFORTABLE"'
 
 partial_download_report=$(IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 run_ipcheck --samples 1 --json)
 printf '%s\n' "$partial_download_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"000","bytes":0,"bytes_per_second":0,'
@@ -472,6 +485,67 @@ printf '%s\n' "$partial_human" | grep -q 'partial estimates and do not prove ban
 partial_markdown=$(IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 IPCHECK_LANG=en run_ipcheck --samples 1 --markdown)
 printf '%s\n' "$partial_markdown" | grep -q '| Download | 80.0 Mbps | ESTIMATE |'
 printf '%s\n' "$partial_markdown" | grep -q 'partial estimates and do not prove bandwidth is sufficient'
+
+progress_report=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --progress 2>&1 >/dev/null)
+printf '%s\n' "$progress_report" | grep -q 'Press Ctrl+C to cancel at any time.'
+if command -v python3 >/dev/null 2>&1; then
+  PROJECT_DIR="$PROJECT_DIR" STUB_DIR="$STUB_DIR" FIXTURE_HOME="$FIXTURE_HOME" \
+    CODEX_FIXTURE="$CODEX_FIXTURE" CLAUDE_FIXTURE="$CLAUDE_FIXTURE" CURL_LOG="$CURL_LOG" \
+    python3 <<'PY'
+import os
+import glob
+import signal
+import subprocess
+import time
+
+env = os.environ.copy()
+for key in (
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "IPCHECK_SERVICES", "IPCHECK_ENDPOINTS",
+    "CODEX_NETWORK_ENDPOINTS", "CLAUDE_NETWORK_ENDPOINTS", "HTTP_PROXY", "http_proxy",
+    "ALL_PROXY", "all_proxy",
+):
+    env.pop(key, None)
+env.update({
+    "PATH": os.environ["STUB_DIR"] + os.pathsep + env["PATH"],
+    "HOME": os.environ["FIXTURE_HOME"],
+    "CODEX_HOME": os.environ["CODEX_FIXTURE"],
+    "CLAUDE_CONFIG_DIR": os.environ["CLAUDE_FIXTURE"],
+    "HTTPS_PROXY": "http://127.0.0.1:1080",
+    "IPCHECK_LANG": "en",
+    "IPCHECK_PROGRESS": "always",
+    "IPCHECK_TEST_CURL_LOG": os.environ["CURL_LOG"],
+    "IPCHECK_TEST_CURL_SLEEP": "5",
+})
+command = [os.path.join(os.environ["PROJECT_DIR"], "bin", "ipcheck"), "--samples", "1", "--no-bandwidth"]
+
+interrupt_tmp = os.path.join(os.environ["STUB_DIR"], "interrupt-tmp")
+os.mkdir(interrupt_tmp)
+interrupt_env = env.copy()
+interrupt_env["TMPDIR"] = interrupt_tmp
+process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=interrupt_env)
+time.sleep(0.5)
+started = time.monotonic()
+process.send_signal(signal.SIGINT)
+_, stderr = process.communicate(timeout=2)
+assert process.returncode == 130, process.returncode
+assert time.monotonic() - started < 2
+assert "Cancelled." in stderr, stderr
+assert not glob.glob(os.path.join(interrupt_tmp, "ipcheck.*"))
+
+term_tmp = os.path.join(os.environ["STUB_DIR"], "term-tmp")
+os.mkdir(term_tmp)
+term_env = env.copy()
+term_env["TMPDIR"] = term_tmp
+process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=term_env)
+time.sleep(0.5)
+started = time.monotonic()
+process.terminate()
+process.communicate(timeout=2)
+assert process.returncode == 143, process.returncode
+assert time.monotonic() - started < 2
+assert not glob.glob(os.path.join(term_tmp, "ipcheck.*"))
+PY
+fi
 
 grep -Fq -- "--max-time \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
 grep -Fq "networkQuality -c -s -M \"\$TIMEOUT\"" "$PROJECT_DIR/bin/ipcheck"
@@ -491,6 +565,7 @@ set -e
 [ "$blocked_exit" -eq 1 ]
 printf '%s\n' "$blocked_report" | grep -q '"http_code":"000"'
 printf '%s\n' "$blocked_report" | grep -q '"bandwidth":{"enabled":false,"available":false,"http_code":"000"'
+printf '%s\n' "$blocked_report" | grep -q '"score":0,"score_label":"LIMITED","score_method":"rule_v1"'
 
 markdown=$(run_ipcheck --samples 1 --no-bandwidth --markdown)
 printf '%s\n' "$markdown" | grep -q '^# ipcheck: AI Coding Network Report'

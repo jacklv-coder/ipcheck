@@ -13,15 +13,17 @@ Know whether your AI coding CLI is slow, blocked, or using the wrong gateway.
 non-secret routing configuration, then reports reachability, median/P95
 time-to-first-byte (TTFB), jitter, reference bandwidth, and a clear
 `GOOD`, `FAIR`, `POOR`, or `BLOCKED` result. Interactive runs show live,
-color-coded progress and finish with a direct answer to “Ready to code?”.
+color-coded progress, can be cancelled cleanly with `Ctrl+C`, and finish with
+a direct answer plus a rule-based readiness score.
 
 ```text
-$ ipcheck --quick
-ipcheck v0.5.0 — AI coding network diagnostics
+$ ipcheck
+ipcheck v0.6.0 — AI coding network diagnostics
 
 Developer verdict
-  Ready to code? YES, WITH CAUTION
-  Development is possible, but responses may feel slower than ideal.
+  Ready to code? YES
+  Readiness score: 95/100 · COMFORTABLE
+  This network is ready for AI-assisted development.
 
 Detected clients
   Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
@@ -72,7 +74,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.5.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.6.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -123,6 +125,10 @@ and diagnostic reasons remain stable English for automation. Progress is written
 to stderr only for human output and can be controlled with
 `IPCHECK_PROGRESS=auto|always|never`.
 
+Interactive progress starts with `Press Ctrl+C to cancel at any time.` An
+interrupt clears the live progress line, prints `Cancelled.`, removes temporary
+files, and exits with the conventional status `130`.
+
 The service table measures time to first byte and jitter; it is not a transfer
 speed test. The separate bandwidth section downloads up to 2 MB and uploads up to 1 MB of
 zero-filled data through the reported proxy/network path. It rates throughput
@@ -135,6 +141,13 @@ Bandwidth ratings use development-oriented thresholds: download is `FAST` at
 higher and `ADEQUATE` from 2 Mbps. Lower measurements are `SLOW`. The optional
 `--system` test delegates to macOS `networkQuality`, which can transfer
 substantially more data than ipcheck's capped Cloudflare checks.
+
+The readiness score is a transparent heuristic, not a claim about user
+percentiles. Rule v1 starts from the service-path verdict (`90` healthy, `70`
+usable but delayed, `45` reachable but temporarily unavailable, `35` poor, or
+`0` blocked). Completed bandwidth ratings can then add up to 5 points or deduct
+up to 10; partial samples deduct 2 points each. JSON exposes `score`,
+`score_label`, and `score_method` for automation.
 
 Run `ipcheck --help` for the complete option and environment-variable list.
 

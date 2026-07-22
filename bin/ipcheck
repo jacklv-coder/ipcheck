@@ -10,7 +10,7 @@ unset LC_ALL
 LC_NUMERIC=C
 export LC_NUMERIC
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 SCHEMA_VERSION=1
 SAMPLES=3
 TIMEOUT=15
@@ -308,7 +308,58 @@ command -v sed >/dev/null 2>&1 || die "sed is required"
 command -v sort >/dev/null 2>&1 || die "sort is required"
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck.XXXXXX") || die "cannot create a temporary directory"
-trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
+# Preserve the caller's stderr so signal feedback is not swallowed by a
+# per-command `2>/dev/null` redirection active when the trap runs.
+exec 3>&2
+cleanup() {
+  rm -rf "$WORK_DIR"
+}
+
+ACTIVE_CHILD_PID=""
+stop_active_child() {
+  stop_signal="$1"
+  if [ -n "$ACTIVE_CHILD_PID" ]; then
+    kill -"$stop_signal" "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    ACTIVE_CHILD_PID=""
+  fi
+}
+
+cancel_run() {
+  cancel_status="$1"
+  trap - INT
+  # Bash starts managed commands asynchronously, where SIGINT may be ignored.
+  # TERM reliably stops that child after the parent receives Ctrl+C.
+  stop_active_child TERM
+  if [ "$PROGRESS_TTY" -eq 1 ]; then
+    printf '\r\033[2K' >&3
+  fi
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '%s已取消。%s\n' "$C_YELLOW" "$C_RESET" >&3
+  else
+    printf '%sCancelled.%s\n' "$C_YELLOW" "$C_RESET" >&3
+  fi
+  exit "$cancel_status"
+}
+
+terminate_run() {
+  trap - TERM
+  stop_active_child TERM
+  exit 143
+}
+
+run_managed() {
+  (trap - INT TERM; exec "$@") &
+  ACTIVE_CHILD_PID=$!
+  wait "$ACTIVE_CHILD_PID"
+  managed_status=$?
+  ACTIVE_CHILD_PID=""
+  return "$managed_status"
+}
+
+trap cleanup EXIT
+trap 'cancel_run 130' INT
+trap terminate_run TERM
 
 SERVICES_FILE="$WORK_DIR/services.tsv"
 PROBES_FILE="$WORK_DIR/probes.tsv"
@@ -677,14 +728,14 @@ curl_for_service() {
     if [ "$https_proxy_env_found" -eq 0 ] && [ -n "$claude_http_proxy" ]; then
       HTTPS_PROXY="$claude_http_proxy" https_proxy="$claude_http_proxy" \
         HTTP_PROXY="$claude_http_proxy" http_proxy="$claude_http_proxy" \
-        ALL_PROXY='' all_proxy='' command curl -q "$@"
+        ALL_PROXY='' all_proxy='' run_managed curl -q "$@"
     else
-      ALL_PROXY='' all_proxy='' command curl -q "$@"
+      ALL_PROXY='' all_proxy='' run_managed curl -q "$@"
     fi
   elif [ -n "$system_curl_proxy" ] && [ "$service" != "claude" ]; then
-    command curl -q --proxy "$system_curl_proxy" "$@"
+    run_managed curl -q --proxy "$system_curl_proxy" "$@"
   else
-    command curl -q "$@"
+    run_managed curl -q "$@"
   fi
 }
 
@@ -783,8 +834,10 @@ localized_bandwidth_rating() {
 endpoint_count=0
 TAB=$(printf '\t')
 if [ "$UI_LANG" = "zh" ]; then
+  progress_note "⌨" "按 Ctrl+C 可随时取消。"
   progress_note "●" "开始检查 AI 编程服务链路…"
 else
+  progress_note "⌨" "Press Ctrl+C to cancel at any time."
   progress_note "●" "Checking AI coding service paths…"
 fi
 while IFS="$TAB" read -r service label endpoint probe_type priority; do
@@ -796,13 +849,15 @@ while IFS="$TAB" read -r service label endpoint probe_type priority; do
   sample=1
   while [ "$sample" -le "$SAMPLES" ]; do
     progress_sample "$service" "$label" "$sample" "$SAMPLES"
-    metrics=$(run_probe "$service" "$probe_type" "$endpoint" \
+    metrics_file="$WORK_DIR/metrics_${endpoint_count}_${sample}.txt"
+    run_probe "$service" "$probe_type" "$endpoint" \
       --proto '=http,https' --http1.1 -sS -o /dev/null \
       -A "ipcheck/$VERSION" \
       --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
       -w '%{http_code}\t%{time_namelookup}\t%{time_connect}\t%{time_appconnect}\t%{time_starttransfer}\t%{time_total}\t%{size_download}\t%{speed_download}' \
-      2>/dev/null)
+      > "$metrics_file" 2>/dev/null
     curl_exit=$?
+    metrics=$(< "$metrics_file")
     http_code=000
     dns=0
     connect=0
@@ -862,12 +917,14 @@ if [ "$RUN_BANDWIDTH" -eq 1 ]; then
   else
     progress_note "●" "Testing reference download bandwidth (2 MB)…"
   fi
-  bandwidth_metrics=$(curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
+  bandwidth_metrics_file="$WORK_DIR/bandwidth-metrics.txt"
+  curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
     -A "ipcheck/$VERSION" \
     --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
     -w '%{http_code}\t%{size_download}\t%{speed_download}' \
-    --url "$BANDWIDTH_URL" 2>/dev/null)
+    --url "$BANDWIDTH_URL" > "$bandwidth_metrics_file" 2>/dev/null
   bandwidth_exit=$?
+  bandwidth_metrics=$(< "$bandwidth_metrics_file")
   if [ -n "$bandwidth_metrics" ]; then
     IFS="$TAB" read -r bandwidth_code bandwidth_bytes bandwidth_speed <<EOF
 $bandwidth_metrics
@@ -915,13 +972,15 @@ if [ "$RUN_UPLOAD" -eq 1 ]; then
   fi
   upload_file="$WORK_DIR/upload.bin"
   if head -c "$UPLOAD_BYTES" /dev/zero > "$upload_file" 2>/dev/null; then
-    upload_metrics=$(curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
+    upload_metrics_file="$WORK_DIR/upload-metrics.txt"
+    curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
       -A "ipcheck/$VERSION" -X POST -H 'content-type: application/octet-stream' -H 'Expect:' \
       --data-binary "@$upload_file" \
       --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
       -w '%{http_code}\t%{size_upload}\t%{speed_upload}' \
-      --url "$UPLOAD_URL" 2>/dev/null)
+      --url "$UPLOAD_URL" > "$upload_metrics_file" 2>/dev/null
     upload_exit=$?
+    upload_metrics=$(< "$upload_metrics_file")
     if [ -n "$upload_metrics" ]; then
       IFS="$TAB" read -r upload_code upload_bytes upload_speed <<EOF
 $upload_metrics
@@ -1021,7 +1080,7 @@ system_upload_throughput=""
 system_proxy_state=""
 if [ "$RUN_SYSTEM" -eq 1 ] && command -v networkQuality >/dev/null 2>&1; then
   system_file="$WORK_DIR/networkQuality.json"
-  networkQuality -c -s -M "$TIMEOUT" > "$system_file" 2>/dev/null || true
+  run_managed networkQuality -c -s -M "$TIMEOUT" > "$system_file" 2>/dev/null || true
   system_interface=$(sed -n 's/.*"interface_name" *: *"\([^"]*\)".*/\1/p' "$system_file" | head -n 1)
   system_rtt=$(sed -n 's/.*"base_rtt" *: *\([0-9.]*\).*/\1/p' "$system_file" | head -n 1)
   system_throughput=$(sed -n 's/.*"dl_throughput" *: *\([0-9.]*\).*/\1/p' "$system_file" | head -n 1)
@@ -1210,8 +1269,47 @@ case "$overall" in
     ;;
 esac
 
+# A transparent heuristic, not a user percentile. Service-path quality carries
+# most of the score; completed bandwidth samples can move it by at most 10.
+case "$overall" in
+  good) readiness_score=90 ;;
+  fair)
+    if [ "$usable_services" -gt 0 ]; then readiness_score=70; else readiness_score=45; fi
+    ;;
+  poor) readiness_score=35 ;;
+  *) readiness_score=0 ;;
+esac
+if [ "$readiness_score" -gt 0 ]; then
+  case "$download_rating" in
+    fast) readiness_score=$((readiness_score + 2)) ;;
+    slow) readiness_score=$((readiness_score - 5)) ;;
+    partial) readiness_score=$((readiness_score - 2)) ;;
+  esac
+  case "$upload_rating" in
+    fast) readiness_score=$((readiness_score + 3)) ;;
+    slow) readiness_score=$((readiness_score - 5)) ;;
+    partial) readiness_score=$((readiness_score - 2)) ;;
+  esac
+fi
+[ "$readiness_score" -ge 0 ] || readiness_score=0
+[ "$readiness_score" -le 100 ] || readiness_score=100
+if [ "$readiness_score" -ge 90 ]; then
+  readiness_score_label_en="COMFORTABLE"
+  readiness_score_label_zh="舒适"
+elif [ "$readiness_score" -ge 75 ]; then
+  readiness_score_label_en="GOOD"
+  readiness_score_label_zh="良好"
+elif [ "$readiness_score" -ge 60 ]; then
+  readiness_score_label_en="USABLE"
+  readiness_score_label_zh="可用"
+else
+  readiness_score_label_en="LIMITED"
+  readiness_score_label_zh="受限"
+fi
+
 if [ "$UI_LANG" = "zh" ]; then
   readiness_answer="$readiness_answer_zh"
+  readiness_score_label="$readiness_score_label_zh"
   readiness_summary="$readiness_summary_zh"
   readiness_recommendation="$readiness_recommendation_zh"
   if [ "$service_count" -eq 1 ]; then
@@ -1221,6 +1319,7 @@ if [ "$UI_LANG" = "zh" ]; then
   fi
 else
   readiness_answer="$readiness_answer_en"
+  readiness_score_label="$readiness_score_label_en"
   readiness_summary="$readiness_summary_en"
   readiness_recommendation="$readiness_recommendation_en"
   localized_overall_reason="$overall_reason"
@@ -1239,11 +1338,13 @@ render_human() {
     printf '时间（UTC）：%s\n网络路径：%s\n' "$timestamp" "$proxy_text"
     printf '\n%s开发建议%s\n' "$C_BOLD" "$C_RESET"
     printf '  现在适合开发吗？%s%s%s\n' "$C_BOLD" "$readiness_answer" "$C_RESET"
+    printf '  开发适配分：%s%s/100 · %s%s\n' "$C_BOLD" "$readiness_score" "$readiness_score_label" "$C_RESET"
   else
     printf '%sipcheck v%s — AI coding network diagnostics%s\n' "$C_BOLD$C_CYAN" "$VERSION" "$C_RESET"
     printf 'Time (UTC): %s\nNetwork path: %s\n' "$timestamp" "$proxy_text"
     printf '\n%sDeveloper verdict%s\n' "$C_BOLD" "$C_RESET"
     printf '  Ready to code? %s%s%s\n' "$C_BOLD" "$readiness_answer" "$C_RESET"
+    printf '  Readiness score: %s%s/100 · %s%s\n' "$C_BOLD" "$readiness_score" "$readiness_score_label" "$C_RESET"
   fi
   case "$overall" in
     good) verdict_color="$C_GREEN" ;;
@@ -1343,6 +1444,7 @@ render_markdown() {
     printf -- "- 网络路径：\`%s\`\n" "$proxy_text"
     printf -- '- 结果：**%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
     printf -- '- 现在适合开发吗？**%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
+    printf -- '- 开发适配分：**%s/100 · %s**（规则评分，不是用户百分位）\n\n' "$readiness_score" "$readiness_score_label"
     printf '## 检测到的客户端\n\n'
     printf '| 客户端 | 模型 | 路由 | 配置来源 | 结果 |\n|---|---|---|---|---|\n'
   else
@@ -1351,6 +1453,7 @@ render_markdown() {
     printf -- "- Network path: \`%s\`\n" "$proxy_text"
     printf -- '- Result: **%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
     printf -- '- Ready to code? **%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
+    printf -- '- Readiness score: **%s/100 · %s** (rule-based, not a user percentile)\n\n' "$readiness_score" "$readiness_score_label"
     printf '## Detected clients\n\n'
     printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
   fi
@@ -1427,9 +1530,9 @@ render_json() {
     warnings_json="$warnings_json$separator\"$(json_escape "$warning")\""
     separator=","
   done < "$WARNINGS_FILE"
-  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false,"upload_payload":"zero-filled"},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"path":"%s","download":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"},"upload":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"}},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"upload_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
+  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","score":%s,"score_label":"%s","score_method":"rule_v1","summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false,"upload_payload":"zero-filled"},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"path":"%s","download":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"},"upload":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"}},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"upload_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
     "$SCHEMA_VERSION" "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
-    "$readiness_ready" "$readiness_level" "$(json_escape "$readiness_summary_en")" "$(json_escape "$readiness_recommendation_en")" \
+    "$readiness_ready" "$readiness_level" "$readiness_score" "$(json_escape "$readiness_score_label_en")" "$(json_escape "$readiness_summary_en")" "$(json_escape "$readiness_recommendation_en")" \
     "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" "$warnings_json" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$legacy_bandwidth_available" "$legacy_bandwidth_code" "$legacy_bandwidth_bytes" "$legacy_bandwidth_speed" "$(json_escape "$proxy_text")" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_complete" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" "$download_mbps" "$download_rating" \
