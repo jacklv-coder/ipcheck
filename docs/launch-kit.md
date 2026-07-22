@@ -23,8 +23,7 @@ model request is needed.
 Install:
 
 ```sh
-brew tap jacklv-coder/tap
-brew install ipcheck
+brew install jacklv-coder/tap/ipcheck
 ipcheck
 ```
 
@@ -71,8 +70,7 @@ Repo and demo: https://github.com/jacklv-coder/ipcheck
 安装：
 
 ```sh
-brew tap jacklv-coder/tap
-brew install ipcheck
+brew install jacklv-coder/tap/ipcheck
 ipcheck
 ```
 
