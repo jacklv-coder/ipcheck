@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Measure the IP/proxy network path used by Codex/OpenAI endpoints.
+# Diagnose the proxy and network paths used by AI coding CLIs.
 # Dependencies: bash, curl, awk, sed, sort. macOS networkQuality is optional.
 
 set -u
 
-VERSION="0.2.0"
-SAMPLES=5
-TIMEOUT=20
-ENDPOINTS="https://chatgpt.com/|https://api.openai.com/v1/models"
+VERSION="0.3.0"
+SCHEMA_VERSION=1
+SAMPLES=3
+TIMEOUT=15
+SERVICE_MODE="auto"
+CLI_ENDPOINTS=""
 CLI_ENDPOINTS_SET=0
 BANDWIDTH_URL="https://speed.cloudflare.com/__down?bytes=2000000"
 MODE="human"
@@ -16,24 +18,34 @@ RUN_SYSTEM=0
 
 usage() {
   cat <<'EOF'
-ipcheck - diagnose the IP/proxy path used by Codex/OpenAI
+ipcheck - diagnose Codex and Claude Code network paths
 
 Usage:
-  ipcheck [options]
+  ipcheck [codex|claude|all] [options]
 
 Options:
+  --service NAME         auto, codex, claude, or all (default: auto).
   --json                 Emit machine-readable JSON.
   --markdown             Emit a Markdown report.
-  --endpoint URL         Test one endpoint instead of the defaults (repeatable).
-  --samples N            Requests per endpoint (default: 5).
-  --timeout SECONDS      Per-request timeout (default: 20).
+  --endpoint URL         Test custom GET endpoint(s) instead of client defaults.
+  --samples N            Requests per endpoint (default: 3).
+  --timeout SECONDS      Per-request timeout (default: 15).
+  --quick                 Use 1 sample, an 8s timeout, and skip bandwidth.
   --no-bandwidth         Skip the 2 MB reference download test.
   --system               Also run macOS networkQuality when available.
+  -v, --version          Show the ipcheck version.
   -h, --help             Show this help.
 
 Environment:
-  CODEX_NETWORK_ENDPOINTS  Pipe-separated endpoint list, e.g. URL1|URL2.
-  HTTPS_PROXY/ALL_PROXY    Proxy settings are respected by curl and reported redacted.
+  IPCHECK_SERVICES         auto, codex, claude, or all.
+  IPCHECK_ENDPOINTS        Pipe-separated custom endpoint list.
+  CODEX_NETWORK_ENDPOINTS  Pipe-separated Codex endpoint override.
+  CLAUDE_NETWORK_ENDPOINTS Pipe-separated Claude endpoint override.
+  ANTHROPIC_BASE_URL       Claude Code gateway base URL.
+  HTTPS_PROXY/HTTP_PROXY   Standard proxy settings respected by the clients.
+  ALL_PROXY                Also respected by curl; see Claude warnings in output.
+
+No API key or authentication token is used, transmitted, or printed.
 EOF
 }
 
@@ -49,34 +61,65 @@ is_integer() {
   esac
 }
 
+validate_service() {
+  case "$1" in
+    auto|codex|claude|all) ;;
+    *) die "service must be auto, codex, claude, or all" ;;
+  esac
+}
+
+if [ -n "${IPCHECK_SERVICES-}" ]; then
+  validate_service "$IPCHECK_SERVICES"
+  SERVICE_MODE="$IPCHECK_SERVICES"
+fi
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    codex|claude|all)
+      SERVICE_MODE="$1"
+      ;;
+    --service)
+      [ "$#" -ge 2 ] || die "--service requires a name"
+      validate_service "$2"
+      SERVICE_MODE="$2"
+      shift
+      ;;
     --json) MODE="json" ;;
     --markdown) MODE="markdown" ;;
     --endpoint)
       [ "$#" -ge 2 ] || die "--endpoint requires a URL"
       if [ "$CLI_ENDPOINTS_SET" -eq 0 ]; then
-        ENDPOINTS="$2"
+        CLI_ENDPOINTS="$2"
         CLI_ENDPOINTS_SET=1
       else
-        ENDPOINTS="$ENDPOINTS|$2"
+        CLI_ENDPOINTS="$CLI_ENDPOINTS|$2"
       fi
       shift
       ;;
     --samples)
       [ "$#" -ge 2 ] || die "--samples requires a number"
-      is_integer "$2" && [ "$2" -gt 0 ] || die "--samples must be a positive integer"
+      if ! is_integer "$2" || ! [ "$2" -gt 0 ] 2>/dev/null; then
+        die "--samples must be a positive integer"
+      fi
       SAMPLES=$(printf '%s\n' "$2" | sed 's/^0*//')
       shift
       ;;
     --timeout)
       [ "$#" -ge 2 ] || die "--timeout requires a number"
-      is_integer "$2" && [ "$2" -gt 0 ] || die "--timeout must be a positive integer"
+      if ! is_integer "$2" || ! [ "$2" -gt 0 ] 2>/dev/null; then
+        die "--timeout must be a positive integer"
+      fi
       TIMEOUT=$(printf '%s\n' "$2" | sed 's/^0*//')
       shift
       ;;
+    --quick)
+      SAMPLES=1
+      TIMEOUT=8
+      RUN_BANDWIDTH=0
+      ;;
     --no-bandwidth) RUN_BANDWIDTH=0 ;;
     --system) RUN_SYSTEM=1 ;;
+    -v|--version) printf 'ipcheck %s\n' "$VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (use --help)" ;;
   esac
@@ -85,10 +128,295 @@ done
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v awk >/dev/null 2>&1 || die "awk is required"
+command -v sed >/dev/null 2>&1 || die "sed is required"
 command -v sort >/dev/null 2>&1 || die "sort is required"
 
-# curl does not automatically use macOS System Settings proxies. If no proxy
-# environment variable is set, honor the configured HTTPS system proxy.
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck.XXXXXX") || die "cannot create a temporary directory"
+trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
+
+SERVICES_FILE="$WORK_DIR/services.tsv"
+PROBES_FILE="$WORK_DIR/probes.tsv"
+INDEXED_PROBES_FILE="$WORK_DIR/indexed-probes.tsv"
+ENDPOINT_SUMMARY_FILE="$WORK_DIR/endpoint-summary.tsv"
+ENDPOINT_JSON_FILE="$WORK_DIR/endpoints.jsonl"
+SERVICE_RESULT_FILE="$WORK_DIR/service-results.tsv"
+WARNINGS_FILE="$WORK_DIR/warnings.txt"
+: > "$SERVICES_FILE"
+: > "$PROBES_FILE"
+: > "$INDEXED_PROBES_FILE"
+: > "$ENDPOINT_SUMMARY_FILE"
+: > "$ENDPOINT_JSON_FILE"
+: > "$SERVICE_RESULT_FILE"
+: > "$WARNINGS_FILE"
+
+json_escape() {
+  # JSON requires every U+0000..U+001F control character to be escaped. awk's
+  # record handling supplies the escaped LF between input records; shell
+  # variables cannot contain NUL.
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN {
+      ORS = ""
+      for (code = 1; code < 32; code++) controls[sprintf("%c", code)] = code
+    }
+    {
+      if (NR > 1) printf "\\n"
+      for (position = 1; position <= length($0); position++) {
+        character = substr($0, position, 1)
+        if (character == "\\") printf "\\\\"
+        else if (character == "\"") printf "\\\""
+        else if (character in controls) printf "\\u%04x", controls[character]
+        else printf "%s", character
+      }
+    }
+  '
+}
+
+sanitize_field() {
+  printf '%s' "$1" | tr '\t\r\n' '   '
+}
+
+redact_url() {
+  printf '%s' "$1" | sed -E 's#://[^/]*@#://***@#; s#\?.*$#?<redacted>#; s/#.*$//'
+}
+
+toml_top_string() {
+  local file key
+  file="$1"
+  key="$2"
+  [ -f "$file" ] || return 0
+  awk -v key="$key" '
+    /^\[/ { exit }
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      line = $0
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      quote = sprintf("%c", 39)
+      first = substr(line, 1, 1)
+      if (first == "\"") {
+        sub(/^"/, "", line)
+        sub(/"[[:space:]]*(#.*)?$/, "", line)
+      } else if (first == quote) {
+        sub("^" quote, "", line)
+        sub(quote "[[:space:]]*(#.*)?$", "", line)
+      } else {
+        sub(/[[:space:]]*(#.*)?$/, "", line)
+      }
+      print line
+      exit
+    }
+  ' "$file"
+}
+
+toml_section_string() {
+  local file section key
+  file="$1"
+  section="$2"
+  key="$3"
+  [ -f "$file" ] || return 0
+  awk -v section="$section" -v key="$key" '
+    $0 == "[" section "]" { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      line = $0
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      quote = sprintf("%c", 39)
+      first = substr(line, 1, 1)
+      if (first == "\"") {
+        sub(/^"/, "", line)
+        sub(/"[[:space:]]*(#.*)?$/, "", line)
+      } else if (first == quote) {
+        sub("^" quote, "", line)
+        sub(quote "[[:space:]]*(#.*)?$", "", line)
+      } else {
+        sub(/[[:space:]]*(#.*)?$/, "", line)
+      }
+      print line
+      exit
+    }
+  ' "$file"
+}
+
+json_setting() {
+  local file key
+  file="$1"
+  key="$2"
+  [ -f "$file" ] || return 0
+  sed -n -E 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$file" | head -n 1
+}
+
+append_path() {
+  local base path
+  base=$(printf '%s' "$1" | sed 's#/*$##')
+  path="$2"
+  case "$base" in
+    */v1) printf '%s/%s' "$base" "$path" ;;
+    *) printf '%s/v1/%s' "$base" "$path" ;;
+  esac
+}
+
+validate_http_url() {
+  local url authority
+  url="$1"
+  case "$url" in
+    http://*|https://*) ;;
+    *) die "endpoint URLs must use http:// or https://" ;;
+  esac
+  case "$url" in
+    *[[:space:]]*) die "endpoint URLs must not contain whitespace" ;;
+    *\?*|*\#*) die "endpoint URLs must not contain query strings or fragments" ;;
+  esac
+  authority=${url#*://}
+  authority=${authority%%/*}
+  [ -n "$authority" ] || die "endpoint URL is missing a host"
+  case "$authority" in
+    *@*) die "endpoint URLs must not contain credentials" ;;
+  esac
+}
+
+add_service() {
+  # id, display name, model, base URL/route, config source
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$(sanitize_field "$1")" "$(sanitize_field "$2")" "$(sanitize_field "$3")" \
+    "$(sanitize_field "$(redact_url "$4")")" "$(sanitize_field "$5")" >> "$SERVICES_FILE"
+}
+
+add_probe() {
+  # service, label, URL, probe type, primary|secondary
+  validate_http_url "$3"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$(sanitize_field "$1")" "$(sanitize_field "$2")" "$3" \
+    "$(sanitize_field "$4")" "$(sanitize_field "$5")" >> "$PROBES_FILE"
+}
+
+add_endpoint_list() {
+  local service remaining label_prefix endpoint number final
+  service="$1"
+  remaining="$2"
+  label_prefix="$3"
+  number=1
+  while :; do
+    final=0
+    case "$remaining" in
+      *'|'*) endpoint=${remaining%%|*}; remaining=${remaining#*|} ;;
+      *) endpoint="$remaining"; remaining=""; final=1 ;;
+    esac
+    if [ -n "$endpoint" ]; then
+      add_probe "$service" "$label_prefix $number" "$endpoint" "get" "$([ "$number" -eq 1 ] && printf primary || printf secondary)"
+      number=$((number + 1))
+    fi
+    [ "$final" -eq 0 ] || break
+  done
+}
+
+CODEX_HOME_PATH="${CODEX_HOME:-$HOME/.codex}"
+CODEX_CONFIG="$CODEX_HOME_PATH/config.toml"
+CLAUDE_CONFIG_PATH="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CLAUDE_SETTINGS="$CLAUDE_CONFIG_PATH/settings.json"
+if [ -n "${CLAUDE_CONFIG_DIR-}" ]; then
+  CLAUDE_SETTINGS_SOURCE="\${CLAUDE_CONFIG_DIR}/settings.json"
+else
+  CLAUDE_SETTINGS_SOURCE="\$HOME/.claude/settings.json"
+fi
+
+if [ "$SERVICE_MODE" = "auto" ]; then
+  codex_detected=0
+  claude_detected=0
+  command -v codex >/dev/null 2>&1 && codex_detected=1
+  [ -f "$CODEX_CONFIG" ] && codex_detected=1
+  [ -n "${CODEX_NETWORK_ENDPOINTS-}" ] && codex_detected=1
+  command -v claude >/dev/null 2>&1 && claude_detected=1
+  [ -f "$CLAUDE_SETTINGS" ] && claude_detected=1
+  [ -n "${ANTHROPIC_BASE_URL-}${ANTHROPIC_MODEL-}" ] && claude_detected=1
+  [ -n "${CLAUDE_NETWORK_ENDPOINTS-}" ] && claude_detected=1
+  if [ "$codex_detected" -eq 1 ] && [ "$claude_detected" -eq 1 ]; then
+    SERVICE_MODE="all"
+  elif [ "$claude_detected" -eq 1 ]; then
+    SERVICE_MODE="claude"
+  elif [ "$codex_detected" -eq 1 ]; then
+    SERVICE_MODE="codex"
+  else
+    SERVICE_MODE="all"
+  fi
+fi
+
+if [ "$CLI_ENDPOINTS_SET" -eq 0 ] && [ -n "${IPCHECK_ENDPOINTS-}" ]; then
+  CLI_ENDPOINTS="$IPCHECK_ENDPOINTS"
+  CLI_ENDPOINTS_SET=1
+fi
+
+if [ "$CLI_ENDPOINTS_SET" -eq 1 ]; then
+  add_service "custom" "Custom" "n/a" "custom endpoints" "command line/environment"
+  add_endpoint_list "custom" "$CLI_ENDPOINTS" "Custom endpoint"
+  SERVICE_MODE="custom"
+else
+  if [ "$SERVICE_MODE" = "codex" ] || [ "$SERVICE_MODE" = "all" ]; then
+    codex_model=$(toml_top_string "$CODEX_CONFIG" "model")
+    [ -n "$codex_model" ] || codex_model="default"
+    codex_provider=$(toml_top_string "$CODEX_CONFIG" "model_provider")
+    codex_base=$(toml_top_string "$CODEX_CONFIG" "openai_base_url")
+    codex_source="Codex defaults"
+    if [ -n "$codex_provider" ]; then
+      provider_base=$(toml_section_string "$CODEX_CONFIG" "model_providers.$codex_provider" "base_url")
+      if [ -n "$provider_base" ]; then
+        codex_base="$provider_base"
+        codex_source="config.toml provider $codex_provider"
+      elif [ -n "$codex_base" ]; then
+        codex_source="config.toml openai_base_url"
+      fi
+    elif [ -n "$codex_base" ]; then
+      codex_source="config.toml openai_base_url"
+    fi
+
+    if [ -n "${CODEX_NETWORK_ENDPOINTS-}" ]; then
+      add_service "codex" "Codex" "$codex_model" "custom endpoints" "CODEX_NETWORK_ENDPOINTS"
+      add_endpoint_list "codex" "$CODEX_NETWORK_ENDPOINTS" "Codex endpoint"
+    elif [ -n "$codex_base" ]; then
+      add_service "codex" "Codex" "$codex_model" "$codex_base" "$codex_source"
+      add_probe "codex" "Codex Responses API" "$(append_path "$codex_base" "responses")" "openai" "primary"
+    else
+      add_service "codex" "Codex" "$codex_model" "https://chatgpt.com + https://api.openai.com" "$codex_source"
+      add_probe "codex" "ChatGPT" "https://chatgpt.com/" "head" "primary"
+      add_probe "codex" "OpenAI API" "https://api.openai.com/v1/models" "head" "secondary"
+    fi
+  fi
+
+  if [ "$SERVICE_MODE" = "claude" ] || [ "$SERVICE_MODE" = "all" ]; then
+    claude_base="${ANTHROPIC_BASE_URL-}"
+    claude_model="${ANTHROPIC_MODEL-}"
+    claude_source="environment"
+    if [ -z "$claude_base" ]; then
+      claude_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_BASE_URL")
+      claude_source="$CLAUDE_SETTINGS_SOURCE"
+    fi
+    if [ -z "$claude_model" ]; then
+      claude_model=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_MODEL")
+    fi
+    if [ -z "$claude_base" ]; then
+      claude_base="https://api.anthropic.com"
+      claude_source="Claude Code default"
+    fi
+    [ -n "$claude_model" ] || claude_model="default"
+
+    if [ -n "${CLAUDE_NETWORK_ENDPOINTS-}" ]; then
+      add_service "claude" "Claude Code" "$claude_model" "custom endpoints" "CLAUDE_NETWORK_ENDPOINTS"
+      add_endpoint_list "claude" "$CLAUDE_NETWORK_ENDPOINTS" "Claude endpoint"
+    else
+      add_service "claude" "Claude Code" "$claude_model" "$claude_base" "$claude_source"
+      add_probe "claude" "Claude Messages API" "$(append_path "$claude_base" "messages")" "anthropic" "primary"
+      if [ "$claude_base" = "https://api.anthropic.com" ]; then
+        add_probe "claude" "Claude account auth" "https://claude.ai/" "head" "secondary"
+        add_probe "claude" "Claude Console auth" "https://platform.claude.com/" "head" "secondary"
+      fi
+    fi
+  fi
+fi
+
+[ -s "$SERVICES_FILE" ] || die "no services selected"
+[ -s "$PROBES_FILE" ] || die "no endpoints configured"
+
+# curl does not automatically use macOS System Settings proxies. For Codex and
+# custom probes, fall back to the configured system HTTPS proxy when no proxy
+# environment variable is set. Claude probes intentionally do not: Claude Code
+# documents support for proxy environment variables, not the macOS setting.
 system_proxy_enabled=0
 system_proxy_host=""
 system_proxy_port=""
@@ -97,46 +425,52 @@ if command -v scutil >/dev/null 2>&1; then
   system_proxy_host=$(scutil --proxy 2>/dev/null | sed -n 's/ *HTTPSProxy : \(.*\)/\1/p' | head -n 1)
   system_proxy_port=$(scutil --proxy 2>/dev/null | sed -n 's/ *HTTPSPort : \(.*\)/\1/p' | head -n 1)
 fi
-proxy_env_found=0
-for proxy_name in HTTPS_PROXY https_proxy ALL_PROXY all_proxy; do
+
+https_proxy_env_found=0
+all_proxy_env_found=0
+any_proxy_env_found=0
+claude_http_proxy=""
+proxy_scheme=""
+for proxy_name in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy; do
   eval "proxy_value=\${$proxy_name-}"
-  [ -n "$proxy_value" ] && proxy_env_found=1
+  if [ -n "$proxy_value" ]; then
+    any_proxy_env_found=1
+    case "$proxy_name" in
+      HTTPS_PROXY|https_proxy) https_proxy_env_found=1 ;;
+      HTTP_PROXY|http_proxy) [ -n "$claude_http_proxy" ] || claude_http_proxy="$proxy_value" ;;
+      ALL_PROXY|all_proxy) all_proxy_env_found=1 ;;
+    esac
+    [ -n "$proxy_scheme" ] || proxy_scheme=$(printf '%s' "$proxy_value" | sed -n -E 's#^([a-zA-Z0-9+.-]+)://.*#\1#p')
+  fi
 done
+
 system_curl_proxy=""
-if [ "$proxy_env_found" -eq 0 ] && [ "$system_proxy_enabled" = "1" ] && [ -n "$system_proxy_host" ] && [ -n "$system_proxy_port" ]; then
+if [ "$https_proxy_env_found" -eq 0 ] && [ "$all_proxy_env_found" -eq 0 ] && [ "$system_proxy_enabled" = "1" ] && [ -n "$system_proxy_host" ] && [ -n "$system_proxy_port" ]; then
   system_curl_proxy="http://$system_proxy_host:$system_proxy_port"
 fi
 
-curl_with_proxy() {
-  if [ -n "$system_curl_proxy" ]; then
-    command curl --proxy "$system_curl_proxy" "$@"
-  else
-    command curl "$@"
+if awk -F '\t' '$1 == "claude" { found=1 } END { exit !found }' "$SERVICES_FILE"; then
+  case "$proxy_scheme" in
+    socks|socks4|socks4a|socks5|socks5h)
+      printf '%s\n' "Claude Code does not support SOCKS proxies; configure an HTTP/HTTPS proxy or gateway." >> "$WARNINGS_FILE"
+      ;;
+  esac
+  if [ "$all_proxy_env_found" -eq 1 ] && [ "$https_proxy_env_found" -eq 0 ] && [ -z "$claude_http_proxy" ]; then
+    printf '%s\n' "Claude Code does not document ALL_PROXY; Claude probes ignore it unless HTTPS_PROXY or HTTP_PROXY is also configured." >> "$WARNINGS_FILE"
   fi
-}
-
-if [ "$CLI_ENDPOINTS_SET" -eq 0 ] && [ -n "${CODEX_NETWORK_ENDPOINTS-}" ]; then
-  ENDPOINTS="$CODEX_NETWORK_ENDPOINTS"
+  if [ -n "$system_curl_proxy" ] && [ "$any_proxy_env_found" -eq 0 ]; then
+    printf '%s\n' "A macOS system proxy is configured, but Claude Code expects HTTPS_PROXY/HTTP_PROXY; Claude probes use the direct path." >> "$WARNINGS_FILE"
+  fi
 fi
 
-WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck.XXXXXX") || die "cannot create a temporary directory"
-trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
-
-json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
 redact_proxy() {
-  printf '%s' "$1" | sed -E 's#://[^/@]+@#://***@#'
-}
-
-redact_endpoint() {
-  printf '%s' "$1" | sed -E 's#://[^/@]+@#://***@#; s#\?.*$#?<redacted>#; s/#.*$//'
+  printf '%s' "$1" | sed -E 's#://[^/]*@#://***@#; s#\?.*$#?<redacted>#; s/#.*$//'
 }
 
 proxy_summary() {
-  local name value found=0
-  for name in HTTPS_PROXY https_proxy ALL_PROXY all_proxy; do
+  local name value found route_interface
+  found=0
+  for name in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy; do
     eval "value=\${$name-}"
     if [ -n "$value" ]; then
       [ "$found" -eq 0 ] || printf ', '
@@ -144,9 +478,10 @@ proxy_summary() {
       found=1
     fi
   done
-  if [ "$found" -eq 0 ] && [ "${system_proxy_enabled-0}" = "1" ] && [ -n "${system_proxy_host-}" ]; then
+  if [ -n "$system_curl_proxy" ] && [ "$system_proxy_enabled" = "1" ] && [ -n "$system_proxy_host" ]; then
+    [ "$found" -eq 0 ] || printf ', '
     printf 'macOS HTTPS proxy=%s' "$system_proxy_host"
-    [ -n "${system_proxy_port-}" ] && printf ':%s' "$system_proxy_port"
+    [ -n "$system_proxy_port" ] && printf ':%s' "$system_proxy_port"
     found=1
   fi
   [ "$found" -eq 1 ] || printf 'none detected'
@@ -156,6 +491,48 @@ proxy_summary() {
       utun*) printf ', route=%s (VPN/tunnel)' "$route_interface" ;;
     esac
   fi
+}
+
+curl_for_service() {
+  local service
+  service="$1"
+  shift
+  if [ "$service" = "claude" ]; then
+    if [ "$https_proxy_env_found" -eq 0 ] && [ -n "$claude_http_proxy" ]; then
+      HTTPS_PROXY="$claude_http_proxy" https_proxy="$claude_http_proxy" \
+        HTTP_PROXY="$claude_http_proxy" http_proxy="$claude_http_proxy" \
+        ALL_PROXY='' all_proxy='' command curl -q "$@"
+    else
+      ALL_PROXY='' all_proxy='' command curl -q "$@"
+    fi
+  elif [ -n "$system_curl_proxy" ] && [ "$service" != "claude" ]; then
+    command curl -q --proxy "$system_curl_proxy" "$@"
+  else
+    command curl -q "$@"
+  fi
+}
+
+run_probe() {
+  local service probe_type endpoint
+  service="$1"
+  probe_type="$2"
+  endpoint="$3"
+  shift 3
+  case "$probe_type" in
+    anthropic)
+      curl_for_service "$service" "$@" -X POST \
+        -H 'content-type: application/json' \
+        -H 'anthropic-version: 2023-06-01' \
+        --data '{}' --url "$endpoint"
+      ;;
+    openai)
+      curl_for_service "$service" "$@" -X POST \
+        -H 'content-type: application/json' \
+        --data '{}' --url "$endpoint"
+      ;;
+    head) curl_for_service "$service" "$@" --head --url "$endpoint" ;;
+    *) curl_for_service "$service" "$@" --range 0-0 --url "$endpoint" ;;
+  esac
 }
 
 median_file() {
@@ -192,69 +569,60 @@ format_bits_mbps() {
 }
 
 endpoint_count=0
-old_ifs="$IFS"
-IFS='|'
-for endpoint in $ENDPOINTS; do
+TAB=$(printf '\t')
+while IFS="$TAB" read -r service label endpoint probe_type priority; do
   [ -n "$endpoint" ] || continue
   endpoint_count=$((endpoint_count + 1))
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$endpoint_count" "$service" "$label" "$endpoint" "$probe_type" "$priority" >> "$INDEXED_PROBES_FILE"
   sample_file="$WORK_DIR/endpoint_${endpoint_count}.tsv"
   : > "$sample_file"
   sample=1
   while [ "$sample" -le "$SAMPLES" ]; do
-    metrics=$(curl_with_proxy -L --http1.1 -sS -o /dev/null \
+    metrics=$(run_probe "$service" "$probe_type" "$endpoint" \
+      --proto '=http,https' --http1.1 -sS -o /dev/null \
+      -A "ipcheck/$VERSION" \
       --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
       -w '%{http_code}\t%{time_namelookup}\t%{time_connect}\t%{time_appconnect}\t%{time_starttransfer}\t%{time_total}\t%{size_download}\t%{speed_download}' \
-      "$endpoint" 2>/dev/null)
+      2>/dev/null)
     curl_exit=$?
+    http_code=000
+    dns=0
+    connect=0
+    tls=0
+    first_byte=0
+    total=0
+    bytes=0
+    speed=0
     if [ "$curl_exit" -eq 0 ]; then
-      http_code=000
-      dns=0
-      connect=0
-      tls=0
-      first_byte=0
-      total=0
-      bytes=0
-      speed=0
-      IFS='	' read -r http_code dns connect tls first_byte total bytes speed <<EOF
+      IFS="$TAB" read -r http_code dns connect tls first_byte total bytes speed <<EOF
 $metrics
 EOF
       case "$http_code" in
         [0-9][0-9][0-9]) ;;
         *) curl_exit=1; http_code=000 ;;
       esac
-    else
-      http_code=000
-      dns=0
-      connect=0
-      tls=0
-      first_byte=0
-      total=0
-      bytes=0
-      speed=0
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$curl_exit" "$http_code" "$dns" "$connect" "$tls" "$first_byte" "$total" "$bytes" "$speed" >> "$sample_file"
     sample=$((sample + 1))
   done
-done
-IFS="$old_ifs"
+done < "$PROBES_FILE"
 
 [ "$endpoint_count" -gt 0 ] || die "no endpoints configured"
 
 bandwidth_speed=0
 bandwidth_code=000
 bandwidth_valid=0
+bandwidth_bytes=0
 if [ "$RUN_BANDWIDTH" -eq 1 ]; then
-  bandwidth_metrics=$(curl_with_proxy -L --http1.1 -sS -o /dev/null \
+  bandwidth_metrics=$(curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
+    -A "ipcheck/$VERSION" \
     --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
     -w '%{http_code}\t%{size_download}\t%{speed_download}' \
-    "$BANDWIDTH_URL" 2>/dev/null)
+    --url "$BANDWIDTH_URL" 2>/dev/null)
   bandwidth_exit=$?
   if [ "$bandwidth_exit" -eq 0 ]; then
-    bandwidth_code=000
-    bandwidth_bytes=0
-    bandwidth_speed=0
-    IFS='	' read -r bandwidth_code bandwidth_bytes bandwidth_speed <<EOF
+    IFS="$TAB" read -r bandwidth_code bandwidth_bytes bandwidth_speed <<EOF
 $bandwidth_metrics
 EOF
     case "$bandwidth_code" in
@@ -269,9 +637,6 @@ EOF
     bandwidth_bytes=0
     bandwidth_speed=0
   fi
-else
-  bandwidth_exit=0
-  bandwidth_bytes=0
 fi
 
 system_interface=""
@@ -290,99 +655,179 @@ fi
 reachable_count=0
 primary_ttfb=0
 primary_jitter=0
-primary_http="000"
-primary_ok_count=0
 primary_success_rate=0
-endpoint_json="$WORK_DIR/endpoint.jsonl"
-: > "$endpoint_json"
-
-index=1
-IFS='|'
-for endpoint in $ENDPOINTS; do
-  [ -n "$endpoint" ] || continue
+while IFS="$TAB" read -r index service label endpoint probe_type priority; do
   sample_file="$WORK_DIR/endpoint_${index}.tsv"
   ok_count=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$sample_file")
   success_rate=$(awk -v ok="$ok_count" -v total="$SAMPLES" 'BEGIN { printf "%.0f", ok * 100 / total }')
   [ "$ok_count" -gt 0 ] && reachable_count=$((reachable_count + 1))
-  ttfb_median=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/ttfb_${index}"; median_file "$WORK_DIR/ttfb_${index}")
-  ttfb_p95=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/ttfb_p95_${index}"; p95_file "$WORK_DIR/ttfb_p95_${index}")
-  jitter=$(awk -v median="$ttfb_median" 'BEGIN { total = 0; count = 0 } { if ($1 == 0 && $2 != "000" && $2 != "407") { total += ($6 * 1000 - median) * ($6 * 1000 - median); count++ } } END { if (count == 0) print 0; else print sqrt(total / count) }' "$sample_file")
+  awk '$1 == 0 && $2 != "000" && $2 != "407" { print $6 * 1000 }' "$sample_file" > "$WORK_DIR/ttfb_${index}"
+  ttfb_median=$(median_file "$WORK_DIR/ttfb_${index}")
+  ttfb_p95=$(p95_file "$WORK_DIR/ttfb_${index}")
+  jitter=$(awk -v median="$ttfb_median" '
+    BEGIN { total = 0; count = 0 }
+    $1 == 0 && $2 != "000" && $2 != "407" {
+      total += ($6 * 1000 - median) * ($6 * 1000 - median)
+      count++
+    }
+    END { if (count == 0) print 0; else print sqrt(total / count) }
+  ' "$sample_file")
   observed_http=$(awk '$2 != "000" { print $2; exit }' "$sample_file")
   [ -n "$observed_http" ] || observed_http="000"
-  if [ "$index" -eq 1 ]; then
-    primary_ttfb="$ttfb_median"
-    primary_jitter="$jitter"
-    primary_ok_count="$ok_count"
-    primary_success_rate="$success_rate"
-    primary_http="$observed_http"
-  fi
-  escaped_endpoint=$(json_escape "$(redact_endpoint "$endpoint")")
-  printf '{"url":"%s","reachable":%s,"http_code":"%s","samples":%s,"successful_samples":%s,"success_rate_pct":%s,"ttfb_median_ms":%s,"ttfb_p95_ms":%s,"jitter_ms":%s}\n' \
-    "$escaped_endpoint" "$([ "$ok_count" -gt 0 ] && printf true || printf false)" "$observed_http" "$SAMPLES" "$ok_count" "$success_rate" "$ttfb_median" "$ttfb_p95" "$jitter" >> "$endpoint_json"
-  index=$((index + 1))
-done
-IFS="$old_ifs"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$index" "$service" "$label" "$(redact_url "$endpoint")" "$priority" "$ok_count" "$success_rate" "$ttfb_median" "$ttfb_p95" "$jitter" >> "$ENDPOINT_SUMMARY_FILE"
+  escaped_endpoint=$(json_escape "$(redact_url "$endpoint")")
+  escaped_label=$(json_escape "$label")
+  printf '{"service":"%s","label":"%s","url":"%s","primary":%s,"reachable":%s,"http_code":"%s","samples":%s,"successful_samples":%s,"success_rate_pct":%s,"ttfb_median_ms":%s,"ttfb_p95_ms":%s,"jitter_ms":%s}\n' \
+    "$service" "$escaped_label" "$escaped_endpoint" "$([ "$priority" = "primary" ] && printf true || printf false)" \
+    "$([ "$ok_count" -gt 0 ] && printf true || printf false)" "$observed_http" "$SAMPLES" "$ok_count" "$success_rate" "$ttfb_median" "$ttfb_p95" "$jitter" >> "$ENDPOINT_JSON_FILE"
+done < "$INDEXED_PROBES_FILE"
 
-overall="blocked"
-overall_reason="No tested endpoint returned an HTTP response."
-if [ "$primary_http" = "407" ]; then
-  overall_reason="The proxy requires authentication (HTTP 407), so the service endpoint was not reached."
-fi
-if [ "$reachable_count" -gt 0 ]; then
-  if [ "$primary_ok_count" -eq 0 ] || [ $((primary_ok_count * 100)) -lt $((SAMPLES * 60)) ]; then
-    overall="poor"
-    overall_reason="The primary service path is intermittent or unavailable for most samples."
-  elif [ "$primary_ok_count" -lt "$SAMPLES" ]; then
-    overall="fair"
-    overall_reason="The proxy path is reachable, but one or more sampled requests failed."
-  elif awk -v ttfb="$primary_ttfb" -v jitter="$primary_jitter" 'BEGIN { exit !(ttfb > 0 && ttfb < 800 && jitter < 1000) }'; then
-    overall="good"
-    overall_reason="The proxy path is reachable with acceptable first-byte latency and jitter."
-  elif awk -v ttfb="$primary_ttfb" 'BEGIN { exit !(ttfb > 0 && ttfb < 3000) }'; then
-    overall="fair"
-    overall_reason="The proxy path is usable, but interactive Codex responses may feel delayed."
+service_count=0
+good_services=0
+fair_services=0
+poor_services=0
+blocked_services=0
+overall_rank=0
+while IFS="$TAB" read -r service display model base source; do
+  service_count=$((service_count + 1))
+  primary_index=$(awk -F '\t' -v service="$service" '$2 == service && $5 == "primary" { print $1; exit }' "$ENDPOINT_SUMMARY_FILE")
+  [ -n "$primary_index" ] || continue
+  primary_sample_file="$WORK_DIR/endpoint_${primary_index}.tsv"
+  service_ok=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$primary_sample_file")
+  service_rate=$(awk -v ok="$service_ok" -v total="$SAMPLES" 'BEGIN { printf "%.0f", ok * 100 / total }')
+  service_has_407=$(awk '$2 == "407" { found=1 } END { print found + 0 }' "$primary_sample_file")
+  service_has_404=$(awk '$2 == "404" { found=1 } END { print found + 0 }' "$primary_sample_file")
+  service_has_429=$(awk '$2 == "429" { found=1 } END { print found + 0 }' "$primary_sample_file")
+  service_has_5xx=$(awk '$2 ~ /^5[0-9][0-9]$/ { found=1 } END { print found + 0 }' "$primary_sample_file")
+  service_ttfb=$(awk -F '\t' -v idx="$primary_index" '$1 == idx { print $8; exit }' "$ENDPOINT_SUMMARY_FILE")
+  service_jitter=$(awk -F '\t' -v idx="$primary_index" '$1 == idx { print $10; exit }' "$ENDPOINT_SUMMARY_FILE")
+  service_result="blocked"
+  service_reason="No HTTP response reached the primary service endpoint."
+  service_rank=3
+  if [ "$service_ok" -eq 0 ]; then
+    if [ "$service_has_407" -eq 1 ]; then
+      service_reason="The proxy requires authentication (HTTP 407), so the service endpoint was not reached."
+    fi
   else
-    overall="poor"
-    overall_reason="The proxy path is reachable but has high latency or unstable responses."
+    if [ "$service_has_404" -eq 1 ]; then
+      service_result="poor"
+      service_reason="The host is reachable, but the configured API route returned HTTP 404 in at least one sample. Check the base URL."
+      service_rank=2
+    elif [ $((service_ok * 100)) -lt $((SAMPLES * 60)) ]; then
+      service_result="poor"
+      service_reason="The primary service path is intermittent or unavailable for most samples."
+      service_rank=2
+    elif [ "$service_has_429" -eq 1 ]; then
+      service_result="fair"
+      service_reason="The API route is reachable, but at least one sample was rate limited (HTTP 429)."
+      service_rank=1
+    elif [ "$service_has_5xx" -eq 1 ]; then
+      service_result="fair"
+      service_reason="The API route is reachable, but at least one sample returned a server error."
+      service_rank=1
+    elif [ "$service_has_407" -eq 1 ] || [ "$service_ok" -lt "$SAMPLES" ]; then
+      service_result="fair"
+      service_reason="The service path is reachable, but one or more sampled requests failed."
+      service_rank=1
+    elif awk -v ttfb="$service_ttfb" -v jitter="$service_jitter" 'BEGIN { exit !(ttfb > 0 && ttfb < 800 && jitter < 1000) }'; then
+      service_result="good"
+      service_reason="The service path is reachable with acceptable first-byte latency and jitter."
+      service_rank=0
+    elif awk -v ttfb="$service_ttfb" 'BEGIN { exit !(ttfb > 0 && ttfb < 3000) }'; then
+      service_result="fair"
+      service_reason="The service path is usable, but interactive responses may feel delayed."
+      service_rank=1
+    else
+      service_result="poor"
+      service_reason="The service path is reachable but has high latency or unstable responses."
+      service_rank=2
+    fi
   fi
+  case "$service_result" in
+    good) good_services=$((good_services + 1)) ;;
+    fair) fair_services=$((fair_services + 1)) ;;
+    poor) poor_services=$((poor_services + 1)) ;;
+    blocked) blocked_services=$((blocked_services + 1)) ;;
+  esac
+  [ "$service_rank" -gt "$overall_rank" ] && overall_rank="$service_rank"
+  if [ "$service_count" -eq 1 ]; then
+    primary_ttfb="$service_ttfb"
+    primary_jitter="$service_jitter"
+    primary_success_rate="$service_rate"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$service" "$service_result" "$service_reason" "$service_rate" "$service_ttfb" "$service_jitter" >> "$SERVICE_RESULT_FILE"
+done < "$SERVICES_FILE"
+
+if [ "$blocked_services" -eq "$service_count" ]; then
+  overall="blocked"
+elif [ "$blocked_services" -gt 0 ]; then
+  overall="poor"
+else
+  case "$overall_rank" in
+    0) overall="good" ;;
+    1) overall="fair" ;;
+    *) overall="poor" ;;
+  esac
+fi
+if [ "$service_count" -eq 1 ]; then
+  overall_reason=$(awk -F '\t' 'NR == 1 { print $3 }' "$SERVICE_RESULT_FILE")
+else
+  overall_reason="$good_services good, $fair_services fair, $poor_services poor, $blocked_services blocked service path(s)."
 fi
 
 proxy_text=$(proxy_summary)
 timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
+service_display() {
+  awk -F '\t' -v service="$1" '$1 == service { print $2; exit }' "$SERVICES_FILE"
+}
+
 render_human() {
   cat <<EOF
-ipcheck v$VERSION
+ipcheck v$VERSION — AI coding network diagnostics
 Time (UTC): $timestamp
 Proxy: $proxy_text
 
-Service path
+Detected clients
 EOF
-  index=1
-  IFS='|'
-  for endpoint in $ENDPOINTS; do
-    [ -n "$endpoint" ] || continue
+  while IFS="$TAB" read -r service display model base source; do
+    printf '  %-12s model=%s, route=%s, source=%s\n' "$display" "$model" "$base" "$source"
+  done < "$SERVICES_FILE"
+  if [ -s "$WARNINGS_FILE" ]; then
+    printf '\nWarnings\n'
+    while IFS= read -r warning; do
+      printf '  WARN %s\n' "$warning"
+    done < "$WARNINGS_FILE"
+  fi
+  printf '\nService paths\n'
+  while IFS="$TAB" read -r index service label endpoint probe_type priority; do
     sample_file="$WORK_DIR/endpoint_${index}.tsv"
-    ttfb_median=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/h_ttfb_${index}"; median_file "$WORK_DIR/h_ttfb_${index}")
-    ttfb_p95=$(awk '{ if ($1 == 0 && $2 != "000" && $2 != "407") print $6 * 1000 }' "$sample_file" > "$WORK_DIR/h_ttfb_p95_${index}"; p95_file "$WORK_DIR/h_ttfb_p95_${index}")
-    jitter=$(awk -v median="$ttfb_median" 'BEGIN { total = 0; count = 0 } { if ($1 == 0 && $2 != "000" && $2 != "407") { total += ($6 * 1000 - median) * ($6 * 1000 - median); count++ } } END { if (count == 0) print 0; else print sqrt(total / count) }' "$sample_file")
-    ok_count=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$sample_file")
+    summary=$(awk -F '\t' -v idx="$index" '$1 == idx { print $6 "\t" $8 "\t" $9 "\t" $10; exit }' "$ENDPOINT_SUMMARY_FILE")
+    IFS="$TAB" read -r ok_count ttfb_median ttfb_p95 jitter <<EOF
+$summary
+EOF
     http_code=$(awk '$2 != "000" { print $2; exit }' "$sample_file")
     [ -n "$http_code" ] || http_code="000"
-    display_endpoint=$(redact_endpoint "$endpoint")
+    display_name=$(service_display "$service")
     if [ "$ok_count" -gt 0 ]; then
-      printf '  OK   %-42s HTTP %s, samples %s/%s, median TTFB %s, p95 %s, jitter %s\n' "$display_endpoint" "$http_code" "$ok_count" "$SAMPLES" "$(format_ms "$ttfb_median")" "$(format_ms "$ttfb_p95")" "$(format_ms "$jitter")"
+      printf '  OK   [%-11s] %-25s HTTP %s, %s/%s, median %s, p95 %s, jitter %s\n' \
+        "$display_name" "$label" "$http_code" "$ok_count" "$SAMPLES" "$(format_ms "$ttfb_median")" "$(format_ms "$ttfb_p95")" "$(format_ms "$jitter")"
     elif [ "$http_code" = "407" ]; then
-      printf '  AUTH %-42s HTTP 407, proxy authentication required\n' "$display_endpoint"
+      printf '  AUTH [%-11s] %-25s HTTP 407, proxy authentication required\n' "$display_name" "$label"
     else
-      printf '  FAIL %-42s no HTTP response\n' "$display_endpoint"
+      printf '  FAIL [%-11s] %-25s no HTTP response\n' "$display_name" "$label"
     fi
-    index=$((index + 1))
-  done
-  IFS="$old_ifs"
+  done < "$INDEXED_PROBES_FILE"
+
+  printf '\nService results\n'
+  while IFS="$TAB" read -r service result reason success_rate ttfb jitter; do
+    printf '  %-12s %-7s %s\n' "$(service_display "$service")" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')" "$reason"
+  done < "$SERVICE_RESULT_FILE"
+
   printf '\nReference bandwidth\n'
   if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
-    printf '  Cloudflare download: %s (HTTP %s; reference only, not an OpenAI endpoint)\n' "$(format_mbps "$bandwidth_speed")" "$bandwidth_code"
+    printf '  Cloudflare download: %s (HTTP %s; reference only)\n' "$(format_mbps "$bandwidth_speed")" "$bandwidth_code"
   else
     printf '  skipped or unavailable\n'
   fi
@@ -391,19 +836,34 @@ EOF
     [ -n "$system_proxy_state" ] && printf ', proxy=%s' "$system_proxy_state"
     printf '\n'
   fi
+
   printf '\nResult: %s\n%s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
-  printf 'Interpretation: for Codex, first-byte latency and jitter matter more than raw bandwidth.\n'
-  printf 'HTTP 401/403 still counts as reachable; it usually means the endpoint requires authentication.\n'
+  printf 'Interpretation: first-byte latency, failures, and jitter matter more than peak bandwidth for coding agents.\n'
+  printf 'HTTP 401/403 counts as reachable; ipcheck never sends API credentials or billable model requests.\n'
 }
 
 render_markdown() {
-  printf '# ipcheck: Codex Network Check\n\n'
-  printf -- '- Time (UTC): `%s`\n' "$timestamp"
-  printf -- '- Proxy: `%s`\n' "$proxy_text"
+  printf '# ipcheck: AI Coding Network Report\n\n'
+  printf -- "- Time (UTC): \`%s\`\n" "$timestamp"
+  printf -- "- Proxy: \`%s\`\n" "$proxy_text"
   printf -- '- Result: **%s** — %s\n\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
-  printf '| Endpoint | Reachable | HTTP | Successful samples | Median TTFB | P95 TTFB | Jitter |\n|---|---:|---:|---:|---:|---:|---:|\n'
-  cat "$endpoint_json" | while IFS= read -r line; do
-    url=$(printf '%s' "$line" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+  printf '## Detected clients\n\n'
+  printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
+  while IFS="$TAB" read -r service display model base source; do
+    result=$(awk -F '\t' -v service="$service" '$1 == service { print $2; exit }' "$SERVICE_RESULT_FILE")
+    printf "| %s | \`%s\` | \`%s\` | %s | **%s** |\n" "$display" "$model" "$base" "$source" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')"
+  done < "$SERVICES_FILE"
+  if [ -s "$WARNINGS_FILE" ]; then
+    printf '\n## Warnings\n\n'
+    while IFS= read -r warning; do
+      printf -- '- %s\n' "$warning"
+    done < "$WARNINGS_FILE"
+  fi
+  printf '\n## Endpoints\n\n'
+  printf '| Client | Endpoint | Reachable | HTTP | Successful samples | Median TTFB | P95 TTFB | Jitter |\n|---|---|---:|---:|---:|---:|---:|---:|\n'
+  while IFS= read -r line; do
+    service=$(printf '%s' "$line" | sed -n 's/.*"service":"\([^"]*\)".*/\1/p')
+    label=$(printf '%s' "$line" | sed -n 's/.*"label":"\([^"]*\)".*/\1/p')
     reachable=$(printf '%s' "$line" | sed -n 's/.*"reachable":\([^,]*\).*/\1/p')
     http_code=$(printf '%s' "$line" | sed -n 's/.*"http_code":"\([^"]*\)".*/\1/p')
     samples=$(printf '%s' "$line" | sed -n 's/.*"samples":\([0-9]*\).*/\1/p')
@@ -411,24 +871,46 @@ render_markdown() {
     ttfb=$(printf '%s' "$line" | sed -n 's/.*"ttfb_median_ms":\([^,]*\).*/\1/p')
     p95=$(printf '%s' "$line" | sed -n 's/.*"ttfb_p95_ms":\([^,]*\).*/\1/p')
     jitter=$(printf '%s' "$line" | sed -n 's/.*"jitter_ms":\([^,}]*\).*/\1/p')
-    printf '| `%s` | %s | %s | %s/%s | %.0f ms | %.0f ms | %.0f ms |\n' "$url" "$reachable" "$http_code" "$successful_samples" "$samples" "$ttfb" "$p95" "$jitter"
-  done
+    printf '| %s | %s | %s | %s | %s/%s | %.0f ms | %.0f ms | %.0f ms |\n' "$(service_display "$service")" "$label" "$reachable" "$http_code" "$successful_samples" "$samples" "$ttfb" "$p95" "$jitter"
+  done < "$ENDPOINT_JSON_FILE"
   if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
-    printf '\nReference bandwidth: **%s** (Cloudflare; not an OpenAI endpoint).\n' "$(format_mbps "$bandwidth_speed")"
+    printf '\nReference bandwidth: **%s** (Cloudflare; not a model endpoint).\n' "$(format_mbps "$bandwidth_speed")"
   fi
   if [ -n "$system_throughput" ]; then
-    printf 'macOS networkQuality: **%s**, RTT %.1f ms, interface `%s`.\n' "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
+    printf "macOS networkQuality: **%s**, RTT %.1f ms, interface \`%s\`.\n" "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
   fi
+  printf '\n> ipcheck does not read or transmit API keys and does not make billable model requests.\n'
 }
 
 render_json() {
-  endpoints_json=$(awk 'NR > 1 { printf "," } { printf "%s", $0 }' "$endpoint_json")
-  printf '{"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"proxy_state":"%s"},"endpoints":[%s]}\n' \
-    "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
-    "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" \
+  endpoints_json=$(awk 'NR > 1 { printf "," } { printf "%s", $0 }' "$ENDPOINT_JSON_FILE")
+  services_json=""
+  separator=""
+  while IFS="$TAB" read -r service display model base source; do
+    result=$(awk -F '\t' -v service="$service" '$1 == service { print $2; exit }' "$SERVICE_RESULT_FILE")
+    reason=$(awk -F '\t' -v service="$service" '$1 == service { print $3; exit }' "$SERVICE_RESULT_FILE")
+    success_rate=$(awk -F '\t' -v service="$service" '$1 == service { print $4; exit }' "$SERVICE_RESULT_FILE")
+    ttfb=$(awk -F '\t' -v service="$service" '$1 == service { print $5; exit }' "$SERVICE_RESULT_FILE")
+    jitter=$(awk -F '\t' -v service="$service" '$1 == service { print $6; exit }' "$SERVICE_RESULT_FILE")
+    service_json=$(printf '{"id":"%s","name":"%s","model":"%s","route":"%s","config_source":"%s","result":"%s","reason":"%s","primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s}' \
+      "$(json_escape "$service")" "$(json_escape "$display")" "$(json_escape "$model")" "$(json_escape "$base")" "$(json_escape "$source")" \
+      "$(json_escape "$result")" "$(json_escape "$reason")" "$success_rate" "$ttfb" "$jitter")
+    services_json="$services_json$separator$service_json"
+    separator=","
+  done < "$SERVICES_FILE"
+  warnings_json=""
+  separator=""
+  while IFS= read -r warning; do
+    [ -n "$warning" ] || continue
+    warnings_json="$warnings_json$separator\"$(json_escape "$warning")\""
+    separator=","
+  done < "$WARNINGS_FILE"
+  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
+    "$SCHEMA_VERSION" "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
+    "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" "$warnings_json" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" \
     "$([ -n "$system_throughput" ] && printf true || printf false)" "$(json_escape "$system_interface")" "${system_rtt:-0}" "${system_throughput:-0}" "$(json_escape "$system_proxy_state")" \
-    "$endpoints_json"
+    "$services_json" "$endpoints_json"
 }
 
 case "$MODE" in
