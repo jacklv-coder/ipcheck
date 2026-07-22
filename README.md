@@ -16,9 +16,11 @@ time-to-first-byte (TTFB), jitter, reference bandwidth, and a clear
 color-coded progress, can be cancelled cleanly with `Ctrl+C`, and finish with
 a direct answer plus a rule-based readiness score.
 
+![Animated ipcheck terminal demo](assets/ipcheck-demo.gif)
+
 ```text
 $ ipcheck
-ipcheck v0.6.1 — AI coding network diagnostics
+ipcheck v0.7.0 — AI coding network diagnostics
 
 Developer verdict
   Ready to code? YES
@@ -74,7 +76,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.6.1/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.7.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -106,12 +108,19 @@ ipcheck --json > ipcheck-report.json
 ipcheck --markdown > ipcheck-report.md
 ```
 
+Explain every score component:
+
+```bash
+ipcheck --explain-score
+```
+
 Tune or override a check:
 
 ```bash
 ipcheck --samples 10
 ipcheck --timeout 30
 ipcheck --system
+ipcheck --explain-score
 ipcheck --endpoint https://your-gateway.example.com/health
 ipcheck --lang zh
 ipcheck --no-progress --no-color
@@ -148,7 +157,8 @@ percentiles. Rule v1 starts from the service-path verdict (`90` healthy, `70`
 usable but delayed, `45` reachable but temporarily unavailable, `35` poor, or
 `0` blocked). Completed bandwidth ratings can then add up to 5 points or deduct
 up to 10; partial samples deduct 2 points each. JSON exposes `score`,
-`score_label`, and `score_method` for automation.
+`score_label`, `score_method`, and the per-component `score_breakdown` for
+automation.
 
 Run `ipcheck --help` for the complete option and environment-variable list.
 

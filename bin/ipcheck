@@ -10,7 +10,7 @@ unset LC_ALL
 LC_NUMERIC=C
 export LC_NUMERIC
 
-VERSION="0.6.1"
+VERSION="0.7.0"
 SCHEMA_VERSION=1
 SAMPLES=3
 TIMEOUT=15
@@ -27,6 +27,7 @@ RUN_SYSTEM=0
 COLOR_MODE="auto"
 PROGRESS_MODE="${IPCHECK_PROGRESS:-auto}"
 LANG_MODE="${IPCHECK_LANG:-auto}"
+EXPLAIN_SCORE=0
 
 usage() {
   cat <<'EOF'
@@ -51,6 +52,7 @@ Options:
   --progress             Always emit human-readable progress to stderr.
   --no-progress          Disable progress output.
   --lang LANG            Output language: auto, en, or zh (default: auto).
+  --explain-score        Show how the readiness score was calculated.
   -v, --version          Show the ipcheck version.
   -h, --help             Show this help.
 
@@ -151,6 +153,7 @@ while [ "$#" -gt 0 ]; do
       LANG_MODE="$2"
       shift
       ;;
+    --explain-score) EXPLAIN_SCORE=1 ;;
     -v|--version) printf 'ipcheck %s\n' "$VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (use --help)" ;;
@@ -1276,24 +1279,28 @@ esac
 # A transparent heuristic, not a user percentile. Service-path quality carries
 # most of the score; completed bandwidth samples can move it by at most 10.
 case "$overall" in
-  good) readiness_score=90 ;;
+  good) readiness_score_base=90 ;;
   fair)
-    if [ "$usable_services" -gt 0 ]; then readiness_score=70; else readiness_score=45; fi
+    if [ "$usable_services" -gt 0 ]; then readiness_score_base=70; else readiness_score_base=45; fi
     ;;
-  poor) readiness_score=35 ;;
-  *) readiness_score=0 ;;
+  poor) readiness_score_base=35 ;;
+  *) readiness_score_base=0 ;;
 esac
+download_score_adjustment=0
+upload_score_adjustment=0
+readiness_score="$readiness_score_base"
 if [ "$readiness_score" -gt 0 ]; then
   case "$download_rating" in
-    fast) readiness_score=$((readiness_score + 2)) ;;
-    slow) readiness_score=$((readiness_score - 5)) ;;
-    partial) readiness_score=$((readiness_score - 2)) ;;
+    fast) download_score_adjustment=2 ;;
+    slow) download_score_adjustment=-5 ;;
+    partial) download_score_adjustment=-2 ;;
   esac
   case "$upload_rating" in
-    fast) readiness_score=$((readiness_score + 3)) ;;
-    slow) readiness_score=$((readiness_score - 5)) ;;
-    partial) readiness_score=$((readiness_score - 2)) ;;
+    fast) upload_score_adjustment=3 ;;
+    slow) upload_score_adjustment=-5 ;;
+    partial) upload_score_adjustment=-2 ;;
   esac
+  readiness_score=$((readiness_score + download_score_adjustment + upload_score_adjustment))
 fi
 [ "$readiness_score" -ge 0 ] || readiness_score=0
 [ "$readiness_score" -le 100 ] || readiness_score=100
@@ -1336,6 +1343,24 @@ service_display() {
   awk -F '\t' -v service="$1" '$1 == service { print $2; exit }' "$SERVICES_FILE"
 }
 
+signed_score() {
+  if [ "$1" -ge 0 ]; then printf '+%s' "$1"; else printf '%s' "$1"; fi
+}
+
+render_score_breakdown() {
+  download_score_label=$(localized_bandwidth_rating "$download_rating")
+  upload_score_label=$(localized_bandwidth_rating "$upload_rating")
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '  评分依据：服务链路 %s；下载 %s %s；上传 %s %s；总分 %s。\n' \
+      "$readiness_score_base" "$download_score_label" "$(signed_score "$download_score_adjustment")" \
+      "$upload_score_label" "$(signed_score "$upload_score_adjustment")" "$readiness_score"
+  else
+    printf '  Score breakdown: service path %s; download %s %s; upload %s %s; total %s.\n' \
+      "$readiness_score_base" "$download_score_label" "$(signed_score "$download_score_adjustment")" \
+      "$upload_score_label" "$(signed_score "$upload_score_adjustment")" "$readiness_score"
+  fi
+}
+
 render_human() {
   if [ "$UI_LANG" = "zh" ]; then
     printf '%sipcheck v%s — AI 编程网络诊断%s\n' "$C_BOLD$C_CYAN" "$VERSION" "$C_RESET"
@@ -1343,12 +1368,14 @@ render_human() {
     printf '\n%s开发建议%s\n' "$C_BOLD" "$C_RESET"
     printf '  现在适合开发吗？%s%s%s\n' "$C_BOLD" "$readiness_answer" "$C_RESET"
     printf '  开发适配分：%s%s/100 · %s%s\n' "$C_BOLD" "$readiness_score" "$readiness_score_label" "$C_RESET"
+    [ "$EXPLAIN_SCORE" -eq 0 ] || render_score_breakdown
   else
     printf '%sipcheck v%s — AI coding network diagnostics%s\n' "$C_BOLD$C_CYAN" "$VERSION" "$C_RESET"
     printf 'Time (UTC): %s\nNetwork path: %s\n' "$timestamp" "$proxy_text"
     printf '\n%sDeveloper verdict%s\n' "$C_BOLD" "$C_RESET"
     printf '  Ready to code? %s%s%s\n' "$C_BOLD" "$readiness_answer" "$C_RESET"
     printf '  Readiness score: %s%s/100 · %s%s\n' "$C_BOLD" "$readiness_score" "$readiness_score_label" "$C_RESET"
+    [ "$EXPLAIN_SCORE" -eq 0 ] || render_score_breakdown
   fi
   case "$overall" in
     good) verdict_color="$C_GREEN" ;;
@@ -1449,6 +1476,11 @@ render_markdown() {
     printf -- '- 结果：**%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
     printf -- '- 现在适合开发吗？**%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
     printf -- '- 开发适配分：**%s/100 · %s**（规则评分，不是用户百分位）\n\n' "$readiness_score" "$readiness_score_label"
+    if [ "$EXPLAIN_SCORE" -eq 1 ]; then
+      printf -- '- 评分依据：服务链路 %s；下载 %s %s；上传 %s %s；总分 %s。\n\n' \
+        "$readiness_score_base" "$(localized_bandwidth_rating "$download_rating")" "$(signed_score "$download_score_adjustment")" \
+        "$(localized_bandwidth_rating "$upload_rating")" "$(signed_score "$upload_score_adjustment")" "$readiness_score"
+    fi
     printf '## 检测到的客户端\n\n'
     printf '| 客户端 | 模型 | 路由 | 配置来源 | 结果 |\n|---|---|---|---|---|\n'
   else
@@ -1458,6 +1490,11 @@ render_markdown() {
     printf -- '- Result: **%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
     printf -- '- Ready to code? **%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
     printf -- '- Readiness score: **%s/100 · %s** (rule-based, not a user percentile)\n\n' "$readiness_score" "$readiness_score_label"
+    if [ "$EXPLAIN_SCORE" -eq 1 ]; then
+      printf -- '- Score breakdown: service path %s; download %s %s; upload %s %s; total %s.\n\n' \
+        "$readiness_score_base" "$(localized_bandwidth_rating "$download_rating")" "$(signed_score "$download_score_adjustment")" \
+        "$(localized_bandwidth_rating "$upload_rating")" "$(signed_score "$upload_score_adjustment")" "$readiness_score"
+    fi
     printf '## Detected clients\n\n'
     printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
   fi
@@ -1534,9 +1571,9 @@ render_json() {
     warnings_json="$warnings_json$separator\"$(json_escape "$warning")\""
     separator=","
   done < "$WARNINGS_FILE"
-  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","score":%s,"score_label":"%s","score_method":"rule_v1","summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false,"upload_payload":"zero-filled"},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"path":"%s","download":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"},"upload":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"}},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"upload_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
+  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","score":%s,"score_label":"%s","score_method":"rule_v1","score_breakdown":{"service_path":%s,"download":%s,"upload":%s},"summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false,"upload_payload":"zero-filled"},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"path":"%s","download":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"},"upload":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"}},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"upload_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
     "$SCHEMA_VERSION" "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
-    "$readiness_ready" "$readiness_level" "$readiness_score" "$(json_escape "$readiness_score_label_en")" "$(json_escape "$readiness_summary_en")" "$(json_escape "$readiness_recommendation_en")" \
+    "$readiness_ready" "$readiness_level" "$readiness_score" "$(json_escape "$readiness_score_label_en")" "$readiness_score_base" "$download_score_adjustment" "$upload_score_adjustment" "$(json_escape "$readiness_summary_en")" "$(json_escape "$readiness_recommendation_en")" \
     "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" "$warnings_json" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$legacy_bandwidth_available" "$legacy_bandwidth_code" "$legacy_bandwidth_bytes" "$legacy_bandwidth_speed" "$(json_escape "$proxy_text")" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_complete" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" "$download_mbps" "$download_rating" \
