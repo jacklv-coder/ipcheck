@@ -199,7 +199,7 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.8.0" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.8.1" ]
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q -- '--explain-score'
 
 : > "$CURL_LOG"

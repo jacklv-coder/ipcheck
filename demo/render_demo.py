@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render English and Chinese README GIFs from the real ipcheck CLI.
+"""Render healthy-to-limited English and Chinese demos from the real CLI.
 
 Requires Python 3, Pillow, and a CJK font for the Chinese demo. No live service
 or credential is used.
@@ -67,7 +67,7 @@ def font(size: int, language: str, bold: bool = False) -> ImageFont.FreeTypeFont
     return ImageFont.load_default()
 
 
-def demo_output(language: str) -> list[str]:
+def demo_output(language: str, scenario: str) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="ipcheck-demo-") as directory:
         fixture = Path(directory)
         home = fixture / "home"
@@ -95,11 +95,21 @@ for argument in "$@"; do
   esac
 done
 if [ "$is_upload" -eq 1 ]; then
-  printf '200\\t1000000\\t2000000'
+  if [ "${IPCHECK_DEMO_SCENARIO-}" = "limited" ]; then
+    printf '200\\t1000000\\t425000'
+  else
+    printf '200\\t1000000\\t2000000'
+  fi
 elif [ "$is_download" -eq 1 ]; then
-  printf '200\\t2000000\\t10000000'
+  if [ "${IPCHECK_DEMO_SCENARIO-}" = "limited" ]; then
+    printf '200\\t2000000\\t400000'
+  else
+    printf '200\\t2000000\\t10000000'
+  fi
 elif [ "$is_claude" -eq 1 ]; then
   printf '403\\t0.020\\t0.040\\t0.060\\t0.220\\t0.240\\t151\\t1000'
+elif [ "${IPCHECK_DEMO_SCENARIO-}" = "limited" ]; then
+  printf '401\\t0.080\\t0.180\\t0.320\\t4.881\\t5.100\\t151\\t1000'
 else
   printf '401\\t0.020\\t0.040\\t0.060\\t0.260\\t0.280\\t151\\t1000'
 fi
@@ -135,6 +145,7 @@ fi
                 "HTTPS_PROXY": "http://127.0.0.1:1080",
                 "IPCHECK_LANG": language,
                 "IPCHECK_PROGRESS": "always",
+                "IPCHECK_DEMO_SCENARIO": scenario,
                 "COLUMNS": "100",
             }
         )
@@ -173,6 +184,8 @@ fi
                 "    上传",
                 "  当前网络",
                 "  可以正常开发",
+                "  建议先",
+                "  !",
                 "◆ 检测到的客户端",
                 "  Codex",
                 "  Claude Code",
@@ -211,6 +224,8 @@ fi
                 "    Upload",
                 "  This network",
                 "  You can work normally",
+                "  Switch proxy routes",
+                "  !",
                 "◆ Detected clients",
                 "  Codex",
                 "  Claude Code",
@@ -229,7 +244,11 @@ fi
 
 
 def line_color(line: str) -> str:
-    if line.strip().startswith("█") or any(token in line for token in ("100/100", "Ready to code? YES", "现在适合开发吗？适合")):
+    score_match = re.search(r"\b(\d+)/100\b", line)
+    if score_match:
+        score = int(score_match.group(1))
+        return GREEN if score >= 90 else YELLOW if score >= 65 else RED
+    if any(token in line for token in ("Ready to code? YES", "现在适合开发吗？适合")):
         return GREEN
     if line.startswith(("◆ Detected clients", "◆ AI service latency", "◆ AI service results", "◆ Network bandwidth", "◆ 检测到的客户端", "◆ AI 服务延迟", "◆ AI 服务结论", "◆ 网络带宽", "ipcheck v")):
         return CYAN
@@ -251,13 +270,44 @@ def clip_line(draw: ImageDraw.ImageDraw, line: str, body_font: ImageFont.ImageFo
     return clipped + "..."
 
 
+def wrap_lines(
+    draw: ImageDraw.ImageDraw,
+    lines: list[str],
+    body_font: ImageFont.ImageFont,
+) -> list[str]:
+    wrapped: list[str] = []
+    max_width = WIDTH - 96
+    for original in lines:
+        if original and set(original) in ({"━"}, {"─"}):
+            wrapped.append(original)
+            continue
+        line = original
+        indent = line[: len(line) - len(line.lstrip())]
+        while draw.textlength(line, font=body_font) > max_width:
+            split_at = len(line)
+            while split_at > len(indent) and draw.textlength(line[:split_at], font=body_font) > max_width:
+                split_at -= 1
+            word_break = line.rfind(" ", len(indent) + 1, split_at)
+            if word_break > len(indent) + 12:
+                split_at = word_break
+            wrapped.append(line[:split_at].rstrip())
+            line = f"{indent}  {line[split_at:].lstrip()}"
+        wrapped.append(line)
+    return wrapped
+
+
 def draw_status_line(
     draw: ImageDraw.ImageDraw,
     line: str,
     position: tuple[int, int],
     body_font: ImageFont.ImageFont,
 ) -> bool:
-    colors = {"✓": GREEN, "●": GREEN, "✕": RED, "!": YELLOW}
+    dot_color = GREEN
+    if any(token in line for token in ("POOR", "BLOCKED", "较差", "阻断")):
+        dot_color = RED
+    elif any(token in line for token in ("FAIR", "一般")):
+        dot_color = YELLOW
+    colors = {"✓": GREEN, "●": dot_color, "✕": RED, "!": YELLOW}
     if not any(symbol in line for symbol in colors):
         return False
     x, y = position
@@ -286,7 +336,13 @@ def frame(command: str, lines: list[str], language: str) -> Image.Image:
     draw.text((76, 98), command, font=body_font, fill=TEXT)
 
     max_lines = 28
-    visible = lines[-max_lines:]
+    visible = wrap_lines(draw, lines, body_font)[-max_lines:]
+    score_color = GREEN
+    for candidate in lines:
+        score_match = re.search(r"\b(\d+)/100\b", candidate)
+        if score_match:
+            score = int(score_match.group(1))
+            score_color = GREEN if score >= 90 else YELLOW if score >= 65 else RED
     y = 138
     for line in visible:
         if line and set(line) in ({"━"}, {"─"}):
@@ -294,6 +350,10 @@ def frame(command: str, lines: list[str], language: str) -> Image.Image:
             y += 23
             continue
         clipped = clip_line(draw, line, body_font)
+        if clipped.strip().startswith(("█", "░")):
+            draw.text((48, y), clipped, font=body_font, fill=score_color)
+            y += 23
+            continue
         if not draw_status_line(draw, clipped, (48, y), body_font):
             draw.text((48, y), clipped, font=body_font, fill=line_color(clipped))
         y += 23
@@ -301,7 +361,8 @@ def frame(command: str, lines: list[str], language: str) -> Image.Image:
 
 
 def render_demo(language: str) -> None:
-    output = demo_output(language)
+    healthy_output = demo_output(language, "healthy")
+    limited_output = demo_output(language, "limited")
     command = "ipcheck --lang zh" if language == "zh" else "ipcheck"
     frames: list[Image.Image] = []
     durations: list[int] = []
@@ -312,9 +373,16 @@ def render_demo(language: str) -> None:
     frames.append(frame(command, [], language))
     durations.append(350)
 
-    for index in range(1, len(output) + 1):
-        frames.append(frame(command, output[:index], language))
-        durations.append(95 if output[index - 1] else 45)
+    for index in range(1, len(healthy_output) + 1):
+        frames.append(frame(command, healthy_output[:index], language))
+        durations.append(85 if healthy_output[index - 1] else 45)
+    durations[-1] = 1800
+
+    frames.append(frame(command, [], language))
+    durations.append(450)
+    for index in range(1, len(limited_output) + 1):
+        frames.append(frame(command, limited_output[:index], language))
+        durations.append(85 if limited_output[index - 1] else 45)
     durations[-1] = 3200
 
     output_path = OUTPUTS[language]
@@ -329,7 +397,7 @@ def render_demo(language: str) -> None:
         disposal=1,
     )
     screenshot_path = SCREENSHOTS[language]
-    frame(command, output, language).save(screenshot_path, optimize=True)
+    frame(command, limited_output, language).save(screenshot_path, optimize=True)
     print(f"Rendered {output_path} ({output_path.stat().st_size / 1024:.0f} KiB, {len(frames)} frames)")
     print(f"Rendered {screenshot_path} ({screenshot_path.stat().st_size / 1024:.0f} KiB)")
 

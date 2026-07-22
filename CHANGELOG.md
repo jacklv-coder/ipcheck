@@ -5,6 +5,16 @@ All notable changes to ipcheck are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-23
+
+### Changed
+
+- Refocused the English and Chinese READMEs on quick installation, the
+  difference from generic speed tests, common commands, and privacy guarantees;
+  moved scoring, network, and automation details into bilingual reference docs.
+- Updated both terminal demos to transition from a healthy network to a
+  realistically limited proxy route with actionable bottleneck hints.
+
 ## [0.8.0] - 2026-07-23
 
 ### Added
@@ -122,6 +132,8 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.0...v0.6.1
