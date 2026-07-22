@@ -827,10 +827,6 @@ p95_file() {
     }'
 }
 
-format_ms() {
-  awk -v value="$1" 'BEGIN { printf "%.0f ms", value }'
-}
-
 format_mbps() {
   awk -v value="$1" 'BEGIN { printf "%.1f Mbps", value * 8 / 1000000 }'
 }
@@ -872,6 +868,16 @@ localized_bandwidth_rating() {
     *:slow) printf 'SLOW' ;;
     *:partial) printf 'ESTIMATE' ;;
     *) printf 'UNAVAILABLE' ;;
+  esac
+}
+
+partial_sample_note() {
+  [ "$1" = "partial" ] || return 0
+  case "$2:$UI_LANG" in
+    human:zh) printf ' · 部分样本 -2' ;;
+    human:*) printf ' · partial sample -2' ;;
+    markdown:zh) printf '，部分样本 -2' ;;
+    markdown:*) printf ', partial sample -2' ;;
   esac
 }
 
@@ -1385,7 +1391,6 @@ score_service_usable=0
 score_service_is_usable=0
 score_success_rate=0
 score_ttfb_value=0
-score_p95_value=0
 score_jitter_value=0
 while IFS="$TAB" read -r service result reason success_rate ttfb jitter service_usable_count; do
   case "$result" in
@@ -1442,7 +1447,6 @@ while IFS="$TAB" read -r service result reason success_rate ttfb jitter service_
     score_jitter="$jitter_points"
     score_success_rate="$success_rate"
     score_ttfb_value="$ttfb"
-    score_p95_value="$service_p95"
     score_jitter_value="$jitter"
     score_service_seen=1
   fi
@@ -1601,14 +1605,14 @@ render_score_breakdown() {
   if [ "$UI_LANG" = "zh" ]; then
     printf '  %s评分构成%s\n' "$C_BOLD" "$C_RESET"
     printf '    服务链路  %2s/90  可达性 %s · TTFB %s · P95 %s · 抖动 %s\n' "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter"
-    printf '    下载      %3s    %s · %s%s\n' "$(signed_points "$download_score")" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$([ "$download_rating" = "partial" ] && printf ' · 部分样本 -2' || true)"
-    printf '    上传      %3s    %s · %s%s\n' "$(signed_points "$upload_score")" "$(format_mbps "$upload_speed")" "$upload_score_label" "$([ "$upload_rating" = "partial" ] && printf ' · 部分样本 -2' || true)"
+    printf '    下载      %3s    %s · %s%s\n' "$(signed_points "$download_score")" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$(partial_sample_note "$download_rating" human)"
+    printf '    上传      %3s    %s · %s%s\n' "$(signed_points "$upload_score")" "$(format_mbps "$upload_speed")" "$upload_score_label" "$(partial_sample_note "$upload_rating" human)"
     [ "$readiness_score_before_cap" -le "$readiness_score_cap" ] || printf '    结论限幅         %s → %s\n' "$readiness_score_before_cap" "$readiness_score_cap"
   else
     printf '  %sScore breakdown%s\n' "$C_BOLD" "$C_RESET"
     printf '    Service path  %2s/90  reachability %s · TTFB %s · P95 %s · jitter %s\n' "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter"
-    printf '    Download      %3s    %s · %s%s\n' "$(signed_points "$download_score")" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$([ "$download_rating" = "partial" ] && printf ' · partial sample -2' || true)"
-    printf '    Upload        %3s    %s · %s%s\n' "$(signed_points "$upload_score")" "$(format_mbps "$upload_speed")" "$upload_score_label" "$([ "$upload_rating" = "partial" ] && printf ' · partial sample -2' || true)"
+    printf '    Download      %3s    %s · %s%s\n' "$(signed_points "$download_score")" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$(partial_sample_note "$download_rating" human)"
+    printf '    Upload        %3s    %s · %s%s\n' "$(signed_points "$upload_score")" "$(format_mbps "$upload_speed")" "$upload_score_label" "$(partial_sample_note "$upload_rating" human)"
     [ "$readiness_score_before_cap" -le "$readiness_score_cap" ] || printf '    Verdict cap          %s → %s\n' "$readiness_score_before_cap" "$readiness_score_cap"
   fi
 }
@@ -1784,8 +1788,8 @@ render_markdown() {
     if [ "$EXPLAIN_SCORE" -eq 1 ]; then
       printf -- '- 评分依据：服务链路 %s/90（可达性 %s + TTFB %s + P95 %s + 抖动 %s）；下载 %s（%s%s）；上传 %s（%s%s）；限幅前 %s；结论上限 %s；总分 %s。\n\n' \
         "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter" \
-        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$([ "$download_rating" = "partial" ] && printf '，部分样本 -2' || true)" \
-        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$([ "$upload_rating" = "partial" ] && printf '，部分样本 -2' || true)" \
+        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$(partial_sample_note "$download_rating" markdown)" \
+        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$(partial_sample_note "$upload_rating" markdown)" \
         "$readiness_score_before_cap" "$readiness_score_cap" "$readiness_score"
     fi
     printf '## 检测到的客户端\n\n'
@@ -1800,8 +1804,8 @@ render_markdown() {
     if [ "$EXPLAIN_SCORE" -eq 1 ]; then
       printf -- '- Score breakdown: service path %s/90 (reachability %s + TTFB %s + P95 %s + jitter %s); download %s (%s%s); upload %s (%s%s); pre-cap %s; verdict cap %s; total %s.\n\n' \
         "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter" \
-        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$([ "$download_rating" = "partial" ] && printf ', partial sample -2' || true)" \
-        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$([ "$upload_rating" = "partial" ] && printf ', partial sample -2' || true)" \
+        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$(partial_sample_note "$download_rating" markdown)" \
+        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$(partial_sample_note "$upload_rating" markdown)" \
         "$readiness_score_before_cap" "$readiness_score_cap" "$readiness_score"
     fi
     printf '## Detected clients\n\n'
