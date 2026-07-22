@@ -17,7 +17,7 @@ color-coded progress and finish with a direct answer to “Ready to code?”.
 
 ```text
 $ ipcheck --quick
-ipcheck v0.4.0 — AI coding network diagnostics
+ipcheck v0.5.0 — AI coding network diagnostics
 
 Developer verdict
   Ready to code? YES, WITH CAUTION
@@ -32,6 +32,11 @@ Service results
   Claude Code  GOOD    The service path is reachable with acceptable latency and jitter.
 
 Result: GOOD
+
+Network bandwidth
+  Download  80.0 Mbps    FAST      Cloudflare, up to 2 MB
+  Upload    16.0 Mbps    FAST      Cloudflare, up to 1 MB zero-filled
+  Advice    Bandwidth is sufficient for everyday AI-assisted development.
 ```
 
 ## Why ipcheck
@@ -67,7 +72,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.4.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.5.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -108,6 +113,7 @@ ipcheck --system
 ipcheck --endpoint https://your-gateway.example.com/health
 ipcheck --lang zh
 ipcheck --no-progress --no-color
+ipcheck --no-upload
 ```
 
 The human and Markdown reports default to the terminal/system language.
@@ -116,6 +122,19 @@ English and Simplified Chinese are currently supported. Override detection with
 and diagnostic reasons remain stable English for automation. Progress is written
 to stderr only for human output and can be controlled with
 `IPCHECK_PROGRESS=auto|always|never`.
+
+The service table measures time to first byte and jitter; it is not a transfer
+speed test. The separate bandwidth section downloads up to 2 MB and uploads up to 1 MB of
+zero-filled data through the reported proxy/network path. It rates throughput
+for common development work without allowing bandwidth to hide a slow or
+unstable AI service. Use `--no-upload` to skip only the upload or
+`--no-bandwidth` to skip both directions.
+
+Bandwidth ratings use development-oriented thresholds: download is `FAST` at
+25 Mbps or higher and `ADEQUATE` from 5 Mbps; upload is `FAST` at 10 Mbps or
+higher and `ADEQUATE` from 2 Mbps. Lower measurements are `SLOW`. The optional
+`--system` test delegates to macOS `networkQuality`, which can transfer
+substantially more data than ipcheck's capped Cloudflare checks.
 
 Run `ipcheck --help` for the complete option and environment-variable list.
 
