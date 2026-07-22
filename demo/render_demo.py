@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Render the README GIF from deterministic output of the real ipcheck CLI.
+
+Requires Python 3 and Pillow. No live service or credential is used.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+
+ROOT = Path(__file__).resolve().parents[1]
+OUTPUT = ROOT / "assets" / "ipcheck-demo.gif"
+WIDTH, HEIGHT = 1200, 720
+BACKGROUND = "#0d1117"
+PANEL = "#161b22"
+TEXT = "#c9d1d9"
+MUTED = "#8b949e"
+GREEN = "#3fb950"
+YELLOW = "#d29922"
+CYAN = "#58a6ff"
+RED = "#f85149"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    candidates = [
+        Path("/System/Library/Fonts/Menlo.ttc"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return ImageFont.truetype(str(candidate), size=size, index=1 if bold and candidate.suffix == ".ttc" else 0)
+    return ImageFont.load_default()
+
+
+BODY_FONT = font(21)
+BODY_BOLD = font(21, bold=True)
+TITLE_FONT = font(17, bold=True)
+
+
+def demo_output() -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="ipcheck-demo-") as directory:
+        fixture = Path(directory)
+        home = fixture / "home"
+        codex = home / ".codex"
+        claude = home / ".claude"
+        codex.mkdir(parents=True)
+        claude.mkdir(parents=True)
+        (codex / "config.toml").write_text('model = "gpt-5.6-sol"\n', encoding="utf-8")
+        (claude / "settings.json").write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://dashscope.aliyuncs.com/apps/anthropic",'
+            '"ANTHROPIC_MODEL":"deepseek-v4-flash"}}\n',
+            encoding="utf-8",
+        )
+        curl = fixture / "curl"
+        curl.write_text(
+            """#!/usr/bin/env bash
+is_download=0
+is_upload=0
+is_claude=0
+for argument in "$@"; do
+  case "$argument" in
+    *__down*) is_download=1 ;;
+    *__up*) is_upload=1 ;;
+    */v1/messages) is_claude=1 ;;
+  esac
+done
+if [ "$is_upload" -eq 1 ]; then
+  printf '200\\t1000000\\t2000000'
+elif [ "$is_download" -eq 1 ]; then
+  printf '200\\t2000000\\t10000000'
+elif [ "$is_claude" -eq 1 ]; then
+  printf '403\\t0.020\\t0.040\\t0.060\\t0.220\\t0.240\\t151\\t1000'
+else
+  printf '401\\t0.020\\t0.040\\t0.060\\t0.260\\t0.280\\t151\\t1000'
+fi
+""",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        environment = os.environ.copy()
+        for key in (
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "CODEX_NETWORK_ENDPOINTS",
+            "CLAUDE_NETWORK_ENDPOINTS",
+            "IPCHECK_ENDPOINTS",
+            "IPCHECK_SERVICES",
+            "HTTP_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            environment.pop(key, None)
+        environment.update(
+            {
+                "PATH": f"{fixture}{os.pathsep}{environment['PATH']}",
+                "HOME": str(home),
+                "CODEX_HOME": str(codex),
+                "CLAUDE_CONFIG_DIR": str(claude),
+                "HTTPS_PROXY": "http://127.0.0.1:1080",
+                "IPCHECK_LANG": "en",
+                "IPCHECK_PROGRESS": "always",
+            }
+        )
+        process = subprocess.run(
+            [str(ROOT / "bin" / "ipcheck"), "all", "--samples", "1", "--no-color", "--explain-score"],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        progress = [line for line in process.stderr.splitlines() if "Ctrl+C" in line or line.startswith("Checking")]
+        report_prefixes = (
+            "ipcheck v",
+            "Developer verdict",
+            "  Ready to code?",
+            "  Readiness score:",
+            "  Score breakdown:",
+            "  This network",
+            "Detected clients",
+            "  Codex",
+            "  Claude Code",
+            "AI service latency",
+            "  Time to first byte",
+            "  OK",
+            "AI service results",
+            "Network bandwidth",
+            "  Download",
+            "  Upload",
+            "  Advice",
+            "Result:",
+            "Interpretation:",
+        )
+        report = [line for line in process.stdout.splitlines() if line.startswith(report_prefixes)]
+        return [ANSI_RE.sub("", line).removeprefix("⌨ ") for line in progress + report]
+
+
+def line_color(line: str) -> str:
+    if any(token in line for token in ("95/100", "GOOD", "FAST", "Ready to code? YES")):
+        return GREEN
+    if line.startswith(("Developer verdict", "Detected clients", "AI service latency", "Network bandwidth")):
+        return CYAN
+    if line.startswith(("Checking", "Press Ctrl+C")):
+        return MUTED
+    if "!" in line or "WARNING" in line:
+        return YELLOW
+    if "BLOCKED" in line or "POOR" in line:
+        return RED
+    return TEXT
+
+
+def frame(command: str, lines: list[str]) -> Image.Image:
+    image = Image.new("RGB", (WIDTH, HEIGHT), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((22, 18, WIDTH - 22, HEIGHT - 18), radius=16, fill=PANEL, outline="#30363d", width=2)
+    draw.ellipse((48, 42, 66, 60), fill="#ff5f56")
+    draw.ellipse((76, 42, 94, 60), fill="#ffbd2e")
+    draw.ellipse((104, 42, 122, 60), fill="#27c93f")
+    draw.text((WIDTH // 2, 51), "ipcheck — terminal", font=TITLE_FONT, fill=MUTED, anchor="mm")
+    draw.line((44, 78, WIDTH - 44, 78), fill="#30363d", width=1)
+    draw.text((48, 98), "$", font=BODY_BOLD, fill=GREEN)
+    draw.text((76, 98), command, font=BODY_FONT, fill=TEXT)
+
+    max_lines = 24
+    visible = lines[-max_lines:]
+    y = 138
+    for line in visible:
+        clipped = line if len(line) <= 91 else line[:88] + "..."
+        draw.text((48, y), clipped, font=BODY_FONT, fill=line_color(clipped))
+        y += 23
+    return image
+
+
+def main() -> None:
+    output = demo_output()
+    command = "ipcheck --explain-score"
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    for index in range(0, len(command) + 1, 2):
+        frames.append(frame(command[:index] + ("▋" if index < len(command) else ""), []))
+        durations.append(80)
+    frames.append(frame(command, []))
+    durations.append(350)
+
+    for index in range(1, len(output) + 1):
+        frames.append(frame(command, output[:index]))
+        durations.append(95 if output[index - 1] else 45)
+    durations[-1] = 3200
+
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        OUTPUT,
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0,
+        optimize=True,
+        disposal=2,
+    )
+    print(f"Rendered {OUTPUT} ({OUTPUT.stat().st_size / 1024:.0f} KiB, {len(frames)} frames)")
+
+
+if __name__ == "__main__":
+    main()

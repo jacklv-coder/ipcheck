@@ -185,7 +185,8 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.6.1" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.7.0" ]
+"$PROJECT_DIR/bin/ipcheck" --help | grep -q -- '--explain-score'
 
 : > "$CURL_LOG"
 report=$(ANTHROPIC_AUTH_TOKEN="runtime-secret-must-never-appear" run_ipcheck --samples 3 --no-bandwidth --json)
@@ -472,6 +473,7 @@ grep -q '^env:ALL_PROXY=$' "$CURL_LOG"
 
 bandwidth_report=$(run_ipcheck --samples 1 --json)
 printf '%s\n' "$bandwidth_report" | grep -q '"score":95,"score_label":"COMFORTABLE","score_method":"rule_v1"'
+printf '%s\n' "$bandwidth_report" | grep -q '"score_breakdown":{"service_path":90,"download":2,"upload":3}'
 printf '%s\n' "$bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":true,"http_code":"200"'
 printf '%s\n' "$bandwidth_report" | grep -q '"download":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":2000000,"bytes_per_second":10000000,"mbps":80.0,"rating":"fast"}'
 printf '%s\n' "$bandwidth_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":1000000,"bytes_per_second":2000000,"mbps":16.0,"rating":"fast"}'
@@ -482,10 +484,17 @@ printf '%s\n' "$bandwidth_human" | grep -q '开发适配分：95/100 · 舒适'
 printf '%s\n' "$bandwidth_human" | grep -q '下载  80.0 Mbps.*快.*Cloudflare，最多 2 MB'
 printf '%s\n' "$bandwidth_human" | grep -q '上传  16.0 Mbps.*快.*Cloudflare，最多 1 MB 零字节'
 printf '%s\n' "$bandwidth_human" | grep -q '路径  HTTPS_PROXY=http://127.0.0.1:1080'
+score_explanation=$(IPCHECK_LANG=en run_ipcheck --samples 1 --explain-score)
+printf '%s\n' "$score_explanation" | grep -q 'Score breakdown: service path 90; download FAST +2; upload FAST +3; total 95.'
+score_explanation_zh=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --markdown --explain-score)
+printf '%s\n' "$score_explanation_zh" | grep -q '评分依据：服务链路 90；下载 快 +2；上传 快 +3；总分 95。'
+score_explanation_without_bandwidth=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --explain-score)
+printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Score breakdown: service path 90; download UNAVAILABLE +0; upload UNAVAILABLE +0; total 90.'
 
-slow_upload_human=$(IPCHECK_TEST_UPLOAD_SPEED=100000 IPCHECK_LANG=en run_ipcheck --samples 1)
+slow_upload_human=$(IPCHECK_TEST_UPLOAD_SPEED=100000 IPCHECK_LANG=en run_ipcheck --samples 1 --explain-score)
 printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*0.8 Mbps.*SLOW'
 printf '%s\n' "$slow_upload_human" | grep -q 'Readiness score: 87/100 · GOOD'
+printf '%s\n' "$slow_upload_human" | grep -q 'upload SLOW -5; total 87.'
 printf '%s\n' "$slow_upload_human" | grep -q 'Upload is slow; sending large code contexts may take longer.'
 invalid_bandwidth_report=$(IPCHECK_TEST_BANDWIDTH_CODE=407 run_ipcheck --samples 1 --json)
 printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0,'

@@ -15,9 +15,11 @@
 实时进度，支持通过 `Ctrl+C` 友好取消，并直接告诉你“现在是否适合开发”以及
 规则化的开发适配分。
 
+![ipcheck 终端动态演示](assets/ipcheck-demo.gif)
+
 ```text
 $ ipcheck
-ipcheck v0.6.1 — AI 编程网络诊断
+ipcheck v0.7.0 — AI 编程网络诊断
 
 开发建议
   现在适合开发吗？适合
@@ -68,7 +70,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.6.1/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.7.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -98,12 +100,19 @@ ipcheck --json > ipcheck-report.json
 ipcheck --markdown > ipcheck-report.md
 ```
 
+查看每一项评分依据：
+
+```bash
+ipcheck --explain-score
+```
+
 其他常用选项：
 
 ```bash
 ipcheck --samples 10
 ipcheck --timeout 30
 ipcheck --system
+ipcheck --explain-score
 ipcheck --endpoint https://your-gateway.example.com/health
 ipcheck --lang en
 ipcheck --no-progress --no-color
@@ -132,7 +141,8 @@ ipcheck --no-upload
 开发适配分是透明的规则评分，不代表“超过多少用户”的百分位。规则 v1 根据
 服务链路结论从 90（健康）、70（可用但偏慢）、45（可达但服务暂不可用）、
 35（较差）或 0（阻断）起算；完整的上下行测速最多加 5 分或扣 10 分，部分
-样本每项扣 2 分。JSON 会输出 `score`、`score_label` 和 `score_method`。
+样本每项扣 2 分。JSON 会输出 `score`、`score_label`、`score_method`，以及逐项的
+`score_breakdown`。
 
 运行 `ipcheck --help` 可以查看完整参数。
 

@@ -3,6 +3,15 @@
 All notable changes to ipcheck are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-07-22
+
+### Added
+
+- `--explain-score` to show the service-path base score and the separate
+  download/upload adjustments in human and Markdown reports.
+- Machine-readable `developer_readiness.score_breakdown` details in JSON.
+- A reproducible animated terminal demo and ready-to-post launch copy.
+
 ## [0.6.1] - 2026-07-22
 
 ### Changed
@@ -87,6 +96,7 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[0.7.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.4.0...v0.5.0
