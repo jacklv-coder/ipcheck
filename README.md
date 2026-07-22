@@ -12,11 +12,16 @@ Know whether your AI coding CLI is slow, blocked, or using the wrong gateway.
 **Codex** and **Claude Code**. It auto-detects installed clients and safe,
 non-secret routing configuration, then reports reachability, median/P95
 time-to-first-byte (TTFB), jitter, reference bandwidth, and a clear
-`GOOD`, `FAIR`, `POOR`, or `BLOCKED` result.
+`GOOD`, `FAIR`, `POOR`, or `BLOCKED` result. Interactive runs show live,
+color-coded progress and finish with a direct answer to “Ready to code?”.
 
 ```text
 $ ipcheck --quick
-ipcheck v0.3.0 — AI coding network diagnostics
+ipcheck v0.4.0 — AI coding network diagnostics
+
+Developer verdict
+  Ready to code? YES, WITH CAUTION
+  Development is possible, but responses may feel slower than ideal.
 
 Detected clients
   Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
@@ -62,7 +67,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.3.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.4.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -101,7 +106,16 @@ ipcheck --samples 10
 ipcheck --timeout 30
 ipcheck --system
 ipcheck --endpoint https://your-gateway.example.com/health
+ipcheck --lang zh
+ipcheck --no-progress --no-color
 ```
+
+The human and Markdown reports default to the terminal/system language.
+English and Simplified Chinese are currently supported. Override detection with
+`--lang en`, `--lang zh`, or `IPCHECK_LANG=en|zh`. JSON field names, enum values,
+and diagnostic reasons remain stable English for automation. Progress is written
+to stderr only for human output and can be controlled with
+`IPCHECK_PROGRESS=auto|always|never`.
 
 Run `ipcheck --help` for the complete option and environment-variable list.
 

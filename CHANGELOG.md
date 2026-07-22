@@ -3,6 +3,23 @@
 All notable changes to ipcheck are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-22
+
+### Added
+
+- Live service and sample progress on interactive terminals, with a quiet mode
+  for scripts and structured reports.
+- Automatic English/Chinese output based on the terminal or macOS system
+  language, plus `--lang` and `IPCHECK_LANG` overrides.
+- A plain-language developer readiness verdict in human, Markdown, and JSON
+  reports.
+- TTY-aware color output with `--color`, `--no-color`, and `NO_COLOR` support.
+
+### Changed
+
+- Human reports now lead with an actionable answer and recommendation.
+- Numeric output always uses a dot decimal separator, independent of locale.
+
 ## [0.3.0] - 2026-07-22
 
 ### Added
@@ -37,5 +54,6 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[0.4.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jacklv-coder/ipcheck/releases/tag/v0.2.0

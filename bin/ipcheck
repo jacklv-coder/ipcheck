@@ -4,7 +4,13 @@
 
 set -u
 
-VERSION="0.3.0"
+# Keep machine-readable numbers portable without losing the user's language hint.
+IPCHECK_SYSTEM_LOCALE="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+unset LC_ALL
+LC_NUMERIC=C
+export LC_NUMERIC
+
+VERSION="0.4.0"
 SCHEMA_VERSION=1
 SAMPLES=3
 TIMEOUT=15
@@ -15,6 +21,9 @@ BANDWIDTH_URL="https://speed.cloudflare.com/__down?bytes=2000000"
 MODE="human"
 RUN_BANDWIDTH=1
 RUN_SYSTEM=0
+COLOR_MODE="auto"
+PROGRESS_MODE="${IPCHECK_PROGRESS:-auto}"
+LANG_MODE="${IPCHECK_LANG:-auto}"
 
 usage() {
   cat <<'EOF'
@@ -33,6 +42,11 @@ Options:
   --quick                 Use 1 sample, an 8s timeout, and skip bandwidth.
   --no-bandwidth         Skip the 2 MB reference download test.
   --system               Also run macOS networkQuality when available.
+  --color                Always use terminal colors in human output.
+  --no-color             Disable terminal colors.
+  --progress             Always emit human-readable progress to stderr.
+  --no-progress          Disable progress output.
+  --lang LANG            Output language: auto, en, or zh (default: auto).
   -v, --version          Show the ipcheck version.
   -h, --help             Show this help.
 
@@ -44,6 +58,9 @@ Environment:
   ANTHROPIC_BASE_URL       Claude Code gateway base URL.
   HTTPS_PROXY/HTTP_PROXY   Standard proxy settings respected by the clients.
   ALL_PROXY                Also respected by curl; see Claude warnings in output.
+  NO_COLOR                Disable terminal colors when set.
+  IPCHECK_PROGRESS         auto, always, or never (default: auto).
+  IPCHECK_LANG             auto, en, or zh (default: auto).
 
 No API key or authentication token is used, transmitted, or printed.
 EOF
@@ -119,12 +136,165 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-bandwidth) RUN_BANDWIDTH=0 ;;
     --system) RUN_SYSTEM=1 ;;
+    --color) COLOR_MODE="always" ;;
+    --no-color) COLOR_MODE="never" ;;
+    --progress) PROGRESS_MODE="always" ;;
+    --no-progress) PROGRESS_MODE="never" ;;
+    --lang)
+      [ "$#" -ge 2 ] || die "--lang requires auto, en, or zh"
+      LANG_MODE="$2"
+      shift
+      ;;
     -v|--version) printf 'ipcheck %s\n' "$VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (use --help)" ;;
   esac
   shift
 done
+
+case "$PROGRESS_MODE" in
+  auto|always|never) ;;
+  *) die "IPCHECK_PROGRESS must be auto, always, or never" ;;
+esac
+
+case "$LANG_MODE" in
+  auto|en|zh) ;;
+  *) die "language must be auto, en, or zh" ;;
+esac
+
+UI_LANG="$LANG_MODE"
+if [ "$UI_LANG" = "auto" ]; then
+  locale_hint="$IPCHECK_SYSTEM_LOCALE"
+  case "$locale_hint" in
+    zh*|ZH*) UI_LANG="zh" ;;
+    en*|EN*) UI_LANG="en" ;;
+    *)
+      UI_LANG="en"
+      if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v defaults >/dev/null 2>&1; then
+        apple_language=$(defaults read -g AppleLanguages 2>/dev/null | sed -n 's/^[[:space:]]*"\([^"-]*\).*$/\1/p' | head -n 1)
+        case "$apple_language" in
+          zh*|ZH*) UI_LANG="zh" ;;
+        esac
+      fi
+      ;;
+  esac
+fi
+
+USE_COLOR=0
+case "$COLOR_MODE" in
+  always) USE_COLOR=1 ;;
+  auto)
+    if [ "$MODE" = "human" ] && [ -t 1 ] && [ -z "${NO_COLOR+x}" ] && [ "${TERM-}" != "dumb" ]; then
+      USE_COLOR=1
+    fi
+    ;;
+esac
+
+if [ "$USE_COLOR" -eq 1 ]; then
+  C_RESET=$(printf '\033[0m')
+  C_BOLD=$(printf '\033[1m')
+  C_RED=$(printf '\033[31m')
+  C_GREEN=$(printf '\033[32m')
+  C_YELLOW=$(printf '\033[33m')
+  C_CYAN=$(printf '\033[36m')
+else
+  C_RESET=""
+  C_BOLD=""
+  C_RED=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_CYAN=""
+fi
+
+PROGRESS_TTY=0
+if [ -t 2 ] && [ "${TERM-}" != "dumb" ]; then
+  PROGRESS_TTY=1
+fi
+SHOW_PROGRESS=0
+if [ "$MODE" = "human" ]; then
+  case "$PROGRESS_MODE" in
+    always) SHOW_PROGRESS=1 ;;
+    auto) [ "$PROGRESS_TTY" -eq 0 ] || SHOW_PROGRESS=1 ;;
+  esac
+fi
+
+ui_service_name() {
+  case "$1" in
+    codex) printf 'Codex' ;;
+    claude) printf 'Claude Code' ;;
+    custom) printf 'Custom' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+progress_note() {
+  [ "$SHOW_PROGRESS" -eq 1 ] || return 0
+  printf '%s%s%s %s\n' "$C_CYAN" "$1" "$C_RESET" "$2" >&2
+}
+
+progress_sample() {
+  local progress_message
+  [ "$SHOW_PROGRESS" -eq 1 ] || return 0
+  if [ "$UI_LANG" = "zh" ]; then
+    progress_message=$(printf '正在测试 %s · %s — 第 %s/%s 次（单次超时 %s 秒）' \
+      "$(ui_service_name "$1")" "$2" "$3" "$4" "$TIMEOUT")
+  else
+    progress_message=$(printf 'Testing %s · %s — sample %s/%s (timeout %ss)' \
+      "$(ui_service_name "$1")" "$2" "$3" "$4" "$TIMEOUT")
+  fi
+  if [ "$PROGRESS_TTY" -eq 1 ]; then
+    printf '\r\033[2K  %s●%s %s' "$C_CYAN" "$C_RESET" "$progress_message" >&2
+  else
+    printf '  %s\n' "$progress_message" >&2
+  fi
+}
+
+progress_finish() {
+  local color icon
+  [ "$SHOW_PROGRESS" -eq 1 ] || return 0
+  if [ "$PROGRESS_TTY" -eq 1 ]; then
+    printf '\r\033[2K' >&2
+  fi
+  case "$1" in
+    ok) color="$C_GREEN"; icon="✓" ;;
+    warn) color="$C_YELLOW"; icon="!" ;;
+    *) color="$C_RED"; icon="✗" ;;
+  esac
+  printf '  %s%s%s %s — %s\n' "$color" "$icon" "$C_RESET" "$2" "$3" >&2
+}
+
+localized_reason() {
+  if [ "$UI_LANG" != "zh" ]; then
+    printf '%s' "$1"
+    return
+  fi
+  case "$1" in
+    "No HTTP response reached the primary service endpoint.") printf '未能从主要服务端点收到 HTTP 响应。' ;;
+    "The proxy requires authentication (HTTP 407), so the service endpoint was not reached.") printf '代理要求身份验证（HTTP 407），尚未到达服务端点。' ;;
+    "The host is reachable, but the configured API route returned HTTP 404 in at least one sample. Check the base URL.") printf '主机可以访问，但配置的 API 路由至少一次返回 HTTP 404，请检查 Base URL。' ;;
+    "The primary service path is intermittent or unavailable for most samples.") printf '主要服务链路时断时续，或大多数测试均不可用。' ;;
+    "The API route is reachable, but at least one sample was rate limited (HTTP 429).") printf 'API 路由可以访问，但至少一次测试触发了限流（HTTP 429）。' ;;
+    "The API route is reachable, but at least one sample returned a server error.") printf 'API 路由可以访问，但至少一次测试返回服务器错误。' ;;
+    "The service path is reachable, but one or more sampled requests failed.") printf '服务链路可以访问，但一次或多次测试请求失败。' ;;
+    "The service path is reachable with acceptable first-byte latency and jitter.") printf '服务链路正常，首字节延迟和抖动都在适合开发的范围内。' ;;
+    "The service path is usable, but interactive responses may feel delayed.") printf '服务链路可用，但交互响应可能会感觉偏慢。' ;;
+    "The service path is reachable but has high latency or unstable responses.") printf '服务链路可以访问，但延迟较高或响应不稳定。' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+localized_warning() {
+  if [ "$UI_LANG" != "zh" ]; then
+    printf '%s' "$1"
+    return
+  fi
+  case "$1" in
+    "Claude Code does not support SOCKS proxies; configure an HTTP/HTTPS proxy or gateway.") printf 'Claude Code 不支持 SOCKS 代理；请配置 HTTP/HTTPS 代理或网关。' ;;
+    "Claude Code does not document ALL_PROXY; Claude probes ignore it unless HTTPS_PROXY or HTTP_PROXY is also configured.") printf 'Claude Code 未声明支持 ALL_PROXY；除非同时配置 HTTPS_PROXY 或 HTTP_PROXY，否则 Claude 测试会忽略它。' ;;
+    "A macOS system proxy is configured, but Claude Code expects HTTPS_PROXY/HTTP_PROXY; Claude probes use the direct path.") printf 'macOS 已配置系统代理，但 Claude Code 需要 HTTPS_PROXY/HTTP_PROXY；当前 Claude 测试使用直连链路。' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v awk >/dev/null 2>&1 || die "awk is required"
@@ -570,6 +740,11 @@ format_bits_mbps() {
 
 endpoint_count=0
 TAB=$(printf '\t')
+if [ "$UI_LANG" = "zh" ]; then
+  progress_note "●" "开始检查 AI 编程服务链路…"
+else
+  progress_note "●" "Checking AI coding service paths…"
+fi
 while IFS="$TAB" read -r service label endpoint probe_type priority; do
   [ -n "$endpoint" ] || continue
   endpoint_count=$((endpoint_count + 1))
@@ -578,6 +753,7 @@ while IFS="$TAB" read -r service label endpoint probe_type priority; do
   : > "$sample_file"
   sample=1
   while [ "$sample" -le "$SAMPLES" ]; do
+    progress_sample "$service" "$label" "$sample" "$SAMPLES"
     metrics=$(run_probe "$service" "$probe_type" "$endpoint" \
       --proto '=http,https' --http1.1 -sS -o /dev/null \
       -A "ipcheck/$VERSION" \
@@ -606,6 +782,27 @@ EOF
       "$curl_exit" "$http_code" "$dns" "$connect" "$tls" "$first_byte" "$total" "$bytes" "$speed" >> "$sample_file"
     sample=$((sample + 1))
   done
+  progress_ok=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$sample_file")
+  progress_http=$(awk '$2 != "000" { print $2; exit }' "$sample_file")
+  progress_has_404=$(awk '$2 == "404" { found=1 } END { print found + 0 }' "$sample_file")
+  progress_has_warning=$(awk '$2 == "429" || $2 ~ /^5[0-9][0-9]$/ { found=1 } END { print found + 0 }' "$sample_file")
+  [ -n "$progress_http" ] || progress_http="000"
+  if [ "$UI_LANG" = "zh" ]; then
+    progress_detail="HTTP ${progress_http}，链路可达 $progress_ok/$SAMPLES 次"
+  else
+    progress_detail="HTTP $progress_http, reachable $progress_ok/$SAMPLES"
+  fi
+  if [ "$progress_has_404" -eq 1 ]; then
+    progress_finish fail "$(ui_service_name "$service") · $label" "$progress_detail"
+  elif [ "$progress_has_warning" -eq 1 ]; then
+    progress_finish warn "$(ui_service_name "$service") · $label" "$progress_detail"
+  elif [ "$progress_ok" -gt 0 ]; then
+    progress_finish ok "$(ui_service_name "$service") · $label" "$progress_detail"
+  elif [ "$progress_http" = "407" ]; then
+    progress_finish warn "$(ui_service_name "$service") · $label" "$progress_detail"
+  else
+    progress_finish fail "$(ui_service_name "$service") · $label" "$progress_detail"
+  fi
 done < "$PROBES_FILE"
 
 [ "$endpoint_count" -gt 0 ] || die "no endpoints configured"
@@ -615,6 +812,11 @@ bandwidth_code=000
 bandwidth_valid=0
 bandwidth_bytes=0
 if [ "$RUN_BANDWIDTH" -eq 1 ]; then
+  if [ "$UI_LANG" = "zh" ]; then
+    progress_note "●" "正在测试参考下载带宽（2 MB）…"
+  else
+    progress_note "●" "Testing reference download bandwidth (2 MB)…"
+  fi
   bandwidth_metrics=$(curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
     -A "ipcheck/$VERSION" \
     --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
@@ -636,6 +838,17 @@ EOF
   if [ "$bandwidth_valid" -eq 0 ]; then
     bandwidth_bytes=0
     bandwidth_speed=0
+  fi
+  if [ "$bandwidth_valid" -eq 1 ]; then
+    if [ "$UI_LANG" = "zh" ]; then
+      progress_finish ok "Cloudflare" "参考带宽 $(format_mbps "$bandwidth_speed")"
+    else
+      progress_finish ok "Cloudflare" "reference bandwidth $(format_mbps "$bandwidth_speed")"
+    fi
+  elif [ "$UI_LANG" = "zh" ]; then
+    progress_finish warn "Cloudflare" "参考带宽测试不可用"
+  else
+    progress_finish warn "Cloudflare" "reference bandwidth unavailable"
   fi
 fi
 
@@ -684,6 +897,7 @@ while IFS="$TAB" read -r index service label endpoint probe_type priority; do
 done < "$INDEXED_PROBES_FILE"
 
 service_count=0
+usable_services=0
 good_services=0
 fair_services=0
 poor_services=0
@@ -695,6 +909,8 @@ while IFS="$TAB" read -r service display model base source; do
   [ -n "$primary_index" ] || continue
   primary_sample_file="$WORK_DIR/endpoint_${primary_index}.tsv"
   service_ok=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$primary_sample_file")
+  service_usable=$(awk '$1 == 0 && $2 != "000" && $2 != "407" && $2 != "404" && $2 != "429" && $2 !~ /^5[0-9][0-9]$/ { count++ } END { print count + 0 }' "$primary_sample_file")
+  [ "$service_usable" -eq 0 ] || usable_services=$((usable_services + 1))
   service_rate=$(awk -v ok="$service_ok" -v total="$SAMPLES" 'BEGIN { printf "%.0f", ok * 100 / total }')
   service_has_407=$(awk '$2 == "407" { found=1 } END { print found + 0 }' "$primary_sample_file")
   service_has_404=$(awk '$2 == "404" { found=1 } END { print found + 0 }' "$primary_sample_file")
@@ -776,6 +992,76 @@ else
   overall_reason="$good_services good, $fair_services fair, $poor_services poor, $blocked_services blocked service path(s)."
 fi
 
+case "$overall" in
+  good)
+    readiness_ready=true
+    readiness_level="ready"
+    readiness_answer_en="YES"
+    readiness_summary_en="This network is ready for AI-assisted development."
+    readiness_recommendation_en="You can work normally; latency and stability are in a comfortable range."
+    readiness_answer_zh="适合"
+    readiness_summary_zh="当前网络适合进行 AI 辅助开发。"
+    readiness_recommendation_zh="可以正常开发，延迟和稳定性都在舒适范围内。"
+    ;;
+  fair)
+    if [ "$usable_services" -gt 0 ]; then
+      readiness_ready=true
+      readiness_level="with_caution"
+      readiness_answer_en="YES, WITH CAUTION"
+      readiness_summary_en="Development is possible, but responses may feel slower than ideal."
+      readiness_recommendation_en="You can keep working. If pauses become distracting, try a lower-latency proxy route."
+      readiness_answer_zh="可以，但会有些慢"
+      readiness_summary_zh="当前可以开发，但响应速度可能不够理想。"
+      readiness_recommendation_zh="可以继续工作；如果等待明显影响节奏，建议切换到延迟更低的代理节点。"
+    else
+      readiness_ready=false
+      readiness_level="temporarily_unavailable"
+      readiness_answer_en="NO"
+      readiness_summary_en="The network path is reachable, but the service is currently unavailable."
+      readiness_recommendation_en="Wait for rate limits or server errors to clear, or switch to another service route."
+      readiness_answer_zh="暂不适合"
+      readiness_summary_zh="网络链路可以访问，但服务当前不可用。"
+      readiness_recommendation_zh="请等待限流或服务器异常恢复，或切换其他服务节点。"
+    fi
+    ;;
+  poor)
+    readiness_ready=false
+    readiness_level="not_recommended"
+    readiness_answer_en="NO"
+    readiness_summary_en="This network is likely to interrupt productive AI-assisted development."
+    readiness_recommendation_en="Switch proxy routes or troubleshoot latency and failures before a long coding session."
+    readiness_answer_zh="暂不适合"
+    readiness_summary_zh="当前网络很可能影响 AI 辅助开发的连续性。"
+    readiness_recommendation_zh="建议先切换代理节点，或排查高延迟和请求失败，再开始较长时间的开发。"
+    ;;
+  *)
+    readiness_ready=false
+    readiness_level="blocked"
+    readiness_answer_en="NO"
+    readiness_summary_en="The AI coding service path is currently blocked."
+    readiness_recommendation_en="Check the proxy, gateway, and endpoint configuration before coding."
+    readiness_answer_zh="不适合"
+    readiness_summary_zh="当前无法连通 AI 编程服务。"
+    readiness_recommendation_zh="请先检查代理、网关和服务端点配置。"
+    ;;
+esac
+
+if [ "$UI_LANG" = "zh" ]; then
+  readiness_answer="$readiness_answer_zh"
+  readiness_summary="$readiness_summary_zh"
+  readiness_recommendation="$readiness_recommendation_zh"
+  if [ "$service_count" -eq 1 ]; then
+    localized_overall_reason=$(localized_reason "$overall_reason")
+  else
+    localized_overall_reason="$good_services 条良好、$fair_services 条一般、$poor_services 条较差、$blocked_services 条阻断。"
+  fi
+else
+  readiness_answer="$readiness_answer_en"
+  readiness_summary="$readiness_summary_en"
+  readiness_recommendation="$readiness_recommendation_en"
+  localized_overall_reason="$overall_reason"
+fi
+
 proxy_text=$(proxy_summary)
 timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
@@ -784,23 +1070,38 @@ service_display() {
 }
 
 render_human() {
-  cat <<EOF
-ipcheck v$VERSION — AI coding network diagnostics
-Time (UTC): $timestamp
-Proxy: $proxy_text
-
-Detected clients
-EOF
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '%sipcheck v%s — AI 编程网络诊断%s\n' "$C_BOLD$C_CYAN" "$VERSION" "$C_RESET"
+    printf '时间（UTC）：%s\n网络路径：%s\n' "$timestamp" "$proxy_text"
+    printf '\n%s开发建议%s\n' "$C_BOLD" "$C_RESET"
+    printf '  现在适合开发吗？%s%s%s\n' "$C_BOLD" "$readiness_answer" "$C_RESET"
+  else
+    printf '%sipcheck v%s — AI coding network diagnostics%s\n' "$C_BOLD$C_CYAN" "$VERSION" "$C_RESET"
+    printf 'Time (UTC): %s\nNetwork path: %s\n' "$timestamp" "$proxy_text"
+    printf '\n%sDeveloper verdict%s\n' "$C_BOLD" "$C_RESET"
+    printf '  Ready to code? %s%s%s\n' "$C_BOLD" "$readiness_answer" "$C_RESET"
+  fi
+  case "$overall" in
+    good) verdict_color="$C_GREEN" ;;
+    fair) verdict_color="$C_YELLOW" ;;
+    *) verdict_color="$C_RED" ;;
+  esac
+  printf '  %s%s%s\n  %s\n' "$verdict_color" "$readiness_summary" "$C_RESET" "$readiness_recommendation"
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '\n%s检测到的客户端%s\n' "$C_BOLD" "$C_RESET"
+  else
+    printf '\n%sDetected clients%s\n' "$C_BOLD" "$C_RESET"
+  fi
   while IFS="$TAB" read -r service display model base source; do
     printf '  %-12s model=%s, route=%s, source=%s\n' "$display" "$model" "$base" "$source"
   done < "$SERVICES_FILE"
   if [ -s "$WARNINGS_FILE" ]; then
-    printf '\nWarnings\n'
+    if [ "$UI_LANG" = "zh" ]; then printf '\n%s注意事项%s\n' "$C_BOLD" "$C_RESET"; else printf '\n%sWarnings%s\n' "$C_BOLD" "$C_RESET"; fi
     while IFS= read -r warning; do
-      printf '  WARN %s\n' "$warning"
+      printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$(localized_warning "$warning")"
     done < "$WARNINGS_FILE"
   fi
-  printf '\nService paths\n'
+  if [ "$UI_LANG" = "zh" ]; then printf '\n%s服务链路%s\n' "$C_BOLD" "$C_RESET"; else printf '\n%sService paths%s\n' "$C_BOLD" "$C_RESET"; fi
   while IFS="$TAB" read -r index service label endpoint probe_type priority; do
     sample_file="$WORK_DIR/endpoint_${index}.tsv"
     summary=$(awk -F '\t' -v idx="$index" '$1 == idx { print $6 "\t" $8 "\t" $9 "\t" $10; exit }' "$ENDPOINT_SUMMARY_FILE")
@@ -811,25 +1112,28 @@ EOF
     [ -n "$http_code" ] || http_code="000"
     display_name=$(service_display "$service")
     if [ "$ok_count" -gt 0 ]; then
-      printf '  OK   [%-11s] %-25s HTTP %s, %s/%s, median %s, p95 %s, jitter %s\n' \
-        "$display_name" "$label" "$http_code" "$ok_count" "$SAMPLES" "$(format_ms "$ttfb_median")" "$(format_ms "$ttfb_p95")" "$(format_ms "$jitter")"
+      if [ "$UI_LANG" = "zh" ]; then
+        printf '  %s正常%s [%-11s] %-25s HTTP %s，%s/%s 次，中位 %s，P95 %s，抖动 %s\n' "$C_GREEN" "$C_RESET" "$display_name" "$label" "$http_code" "$ok_count" "$SAMPLES" "$(format_ms "$ttfb_median")" "$(format_ms "$ttfb_p95")" "$(format_ms "$jitter")"
+      else
+        printf '  %sOK%s   [%-11s] %-25s HTTP %s, %s/%s, median %s, p95 %s, jitter %s\n' "$C_GREEN" "$C_RESET" "$display_name" "$label" "$http_code" "$ok_count" "$SAMPLES" "$(format_ms "$ttfb_median")" "$(format_ms "$ttfb_p95")" "$(format_ms "$jitter")"
+      fi
     elif [ "$http_code" = "407" ]; then
-      printf '  AUTH [%-11s] %-25s HTTP 407, proxy authentication required\n' "$display_name" "$label"
+      if [ "$UI_LANG" = "zh" ]; then printf '  %s认证%s [%-11s] %-25s HTTP 407，需要代理认证\n' "$C_YELLOW" "$C_RESET" "$display_name" "$label"; else printf '  %sAUTH%s [%-11s] %-25s HTTP 407, proxy authentication required\n' "$C_YELLOW" "$C_RESET" "$display_name" "$label"; fi
     else
-      printf '  FAIL [%-11s] %-25s no HTTP response\n' "$display_name" "$label"
+      if [ "$UI_LANG" = "zh" ]; then printf '  %s失败%s [%-11s] %-25s 无 HTTP 响应\n' "$C_RED" "$C_RESET" "$display_name" "$label"; else printf '  %sFAIL%s [%-11s] %-25s no HTTP response\n' "$C_RED" "$C_RESET" "$display_name" "$label"; fi
     fi
   done < "$INDEXED_PROBES_FILE"
 
-  printf '\nService results\n'
+  if [ "$UI_LANG" = "zh" ]; then printf '\n%s服务结论%s\n' "$C_BOLD" "$C_RESET"; else printf '\n%sService results%s\n' "$C_BOLD" "$C_RESET"; fi
   while IFS="$TAB" read -r service result reason success_rate ttfb jitter; do
-    printf '  %-12s %-7s %s\n' "$(service_display "$service")" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')" "$reason"
+    printf '  %-12s %-7s %s\n' "$(service_display "$service")" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')" "$(localized_reason "$reason")"
   done < "$SERVICE_RESULT_FILE"
 
-  printf '\nReference bandwidth\n'
+  if [ "$UI_LANG" = "zh" ]; then printf '\n%s参考带宽%s\n' "$C_BOLD" "$C_RESET"; else printf '\n%sReference bandwidth%s\n' "$C_BOLD" "$C_RESET"; fi
   if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
-    printf '  Cloudflare download: %s (HTTP %s; reference only)\n' "$(format_mbps "$bandwidth_speed")" "$bandwidth_code"
+    if [ "$UI_LANG" = "zh" ]; then printf '  Cloudflare 下载：%s（HTTP %s；仅作参考）\n' "$(format_mbps "$bandwidth_speed")" "$bandwidth_code"; else printf '  Cloudflare download: %s (HTTP %s; reference only)\n' "$(format_mbps "$bandwidth_speed")" "$bandwidth_code"; fi
   else
-    printf '  skipped or unavailable\n'
+    if [ "$UI_LANG" = "zh" ]; then printf '  已跳过或不可用\n'; else printf '  skipped or unavailable\n'; fi
   fi
   if [ -n "$system_throughput" ]; then
     printf '  macOS networkQuality: %s, RTT %.1f ms, interface %s' "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
@@ -837,30 +1141,52 @@ EOF
     printf '\n'
   fi
 
-  printf '\nResult: %s\n%s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
-  printf 'Interpretation: first-byte latency, failures, and jitter matter more than peak bandwidth for coding agents.\n'
-  printf 'HTTP 401/403 counts as reachable; ipcheck never sends API credentials or billable model requests.\n'
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '\n结果：%s%s%s\n%s\n' "$verdict_color" "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$C_RESET" "$localized_overall_reason"
+    printf '说明：对编程智能体来说，首字节延迟、失败率和抖动比峰值带宽更重要。\n'
+    printf 'HTTP 401/403 表示链路可达；ipcheck 不会发送 API 凭据，也不会发起计费模型请求。\n'
+  else
+    printf '\nResult: %s%s%s\n%s\n' "$verdict_color" "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$C_RESET" "$localized_overall_reason"
+    printf 'Interpretation: first-byte latency, failures, and jitter matter more than peak bandwidth for coding agents.\n'
+    printf 'HTTP 401/403 counts as reachable; ipcheck never sends API credentials or billable model requests.\n'
+  fi
 }
 
 render_markdown() {
-  printf '# ipcheck: AI Coding Network Report\n\n'
-  printf -- "- Time (UTC): \`%s\`\n" "$timestamp"
-  printf -- "- Proxy: \`%s\`\n" "$proxy_text"
-  printf -- '- Result: **%s** — %s\n\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$overall_reason"
-  printf '## Detected clients\n\n'
-  printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '# ipcheck：AI 编程网络报告\n\n'
+    printf -- "- 时间（UTC）：\`%s\`\n" "$timestamp"
+    printf -- "- 网络路径：\`%s\`\n" "$proxy_text"
+    printf -- '- 结果：**%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
+    printf -- '- 现在适合开发吗？**%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
+    printf '## 检测到的客户端\n\n'
+    printf '| 客户端 | 模型 | 路由 | 配置来源 | 结果 |\n|---|---|---|---|---|\n'
+  else
+    printf '# ipcheck: AI Coding Network Report\n\n'
+    printf -- "- Time (UTC): \`%s\`\n" "$timestamp"
+    printf -- "- Network path: \`%s\`\n" "$proxy_text"
+    printf -- '- Result: **%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
+    printf -- '- Ready to code? **%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
+    printf '## Detected clients\n\n'
+    printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
+  fi
   while IFS="$TAB" read -r service display model base source; do
     result=$(awk -F '\t' -v service="$service" '$1 == service { print $2; exit }' "$SERVICE_RESULT_FILE")
     printf "| %s | \`%s\` | \`%s\` | %s | **%s** |\n" "$display" "$model" "$base" "$source" "$(printf '%s' "$result" | tr '[:lower:]' '[:upper:]')"
   done < "$SERVICES_FILE"
   if [ -s "$WARNINGS_FILE" ]; then
-    printf '\n## Warnings\n\n'
+    if [ "$UI_LANG" = "zh" ]; then printf '\n## 注意事项\n\n'; else printf '\n## Warnings\n\n'; fi
     while IFS= read -r warning; do
-      printf -- '- %s\n' "$warning"
+      printf -- '- %s\n' "$(localized_warning "$warning")"
     done < "$WARNINGS_FILE"
   fi
-  printf '\n## Endpoints\n\n'
-  printf '| Client | Endpoint | Reachable | HTTP | Successful samples | Median TTFB | P95 TTFB | Jitter |\n|---|---|---:|---:|---:|---:|---:|---:|\n'
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '\n## 服务端点\n\n'
+    printf '| 客户端 | 端点 | 可达 | HTTP | 成功次数 | TTFB 中位数 | TTFB P95 | 抖动 |\n|---|---|---:|---:|---:|---:|---:|---:|\n'
+  else
+    printf '\n## Endpoints\n\n'
+    printf '| Client | Endpoint | Reachable | HTTP | Successful samples | Median TTFB | P95 TTFB | Jitter |\n|---|---|---:|---:|---:|---:|---:|---:|\n'
+  fi
   while IFS= read -r line; do
     service=$(printf '%s' "$line" | sed -n 's/.*"service":"\([^"]*\)".*/\1/p')
     label=$(printf '%s' "$line" | sed -n 's/.*"label":"\([^"]*\)".*/\1/p')
@@ -874,12 +1200,12 @@ render_markdown() {
     printf '| %s | %s | %s | %s | %s/%s | %.0f ms | %.0f ms | %.0f ms |\n' "$(service_display "$service")" "$label" "$reachable" "$http_code" "$successful_samples" "$samples" "$ttfb" "$p95" "$jitter"
   done < "$ENDPOINT_JSON_FILE"
   if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
-    printf '\nReference bandwidth: **%s** (Cloudflare; not a model endpoint).\n' "$(format_mbps "$bandwidth_speed")"
+    if [ "$UI_LANG" = "zh" ]; then printf '\n参考带宽：**%s**（Cloudflare；不是模型端点）。\n' "$(format_mbps "$bandwidth_speed")"; else printf '\nReference bandwidth: **%s** (Cloudflare; not a model endpoint).\n' "$(format_mbps "$bandwidth_speed")"; fi
   fi
   if [ -n "$system_throughput" ]; then
     printf "macOS networkQuality: **%s**, RTT %.1f ms, interface \`%s\`.\n" "$(format_bits_mbps "$system_throughput")" "$system_rtt" "$system_interface"
   fi
-  printf '\n> ipcheck does not read or transmit API keys and does not make billable model requests.\n'
+  if [ "$UI_LANG" = "zh" ]; then printf '\n> ipcheck 不会读取或传输 API 密钥，也不会发起计费模型请求。\n'; else printf '\n> ipcheck does not read or transmit API keys and does not make billable model requests.\n'; fi
 }
 
 render_json() {
@@ -905,8 +1231,9 @@ render_json() {
     warnings_json="$warnings_json$separator\"$(json_escape "$warning")\""
     separator=","
   done < "$WARNINGS_FILE"
-  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
+  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
     "$SCHEMA_VERSION" "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
+    "$readiness_ready" "$readiness_level" "$(json_escape "$readiness_summary_en")" "$(json_escape "$readiness_recommendation_en")" \
     "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" "$warnings_json" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" \
     "$([ -n "$system_throughput" ] && printf true || printf false)" "$(json_escape "$system_interface")" "${system_rtt:-0}" "${system_throughput:-0}" "$(json_escape "$system_proxy_state")" \

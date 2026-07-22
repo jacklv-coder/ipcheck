@@ -11,11 +11,16 @@
 `ipcheck` 是一个零依赖 Bash 命令行工具，面向 **Codex** 和
 **Claude Code** 的真实网络路径。它会自动识别本机客户端以及不含密钥的路由
 配置，测量可达性、首字节延迟（TTFB）中位数/P95、抖动和参考带宽，并给出
-明确的 `GOOD`、`FAIR`、`POOR` 或 `BLOCKED` 结论。
+明确的 `GOOD`、`FAIR`、`POOR` 或 `BLOCKED` 结论。交互运行时会显示带颜色的
+实时进度，并直接告诉你“现在是否适合开发”。
 
 ```text
 $ ipcheck --quick
-ipcheck v0.3.0 — AI coding network diagnostics
+ipcheck v0.4.0 — AI 编程网络诊断
+
+开发建议
+  现在适合开发吗？可以，但会有些慢
+  当前可以开发，但响应速度可能不够理想。
 
 Detected clients
   Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
@@ -56,7 +61,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.3.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.4.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -93,7 +98,14 @@ ipcheck --samples 10
 ipcheck --timeout 30
 ipcheck --system
 ipcheck --endpoint https://your-gateway.example.com/health
+ipcheck --lang en
+ipcheck --no-progress --no-color
 ```
+
+终端和 Markdown 报告默认跟随终端/系统语言，目前支持中文和英文。可以使用
+`--lang zh`、`--lang en`，或 `IPCHECK_LANG=zh|en` 明确指定。JSON 的字段名、
+枚举值和诊断原因始终保持英文，方便自动化脚本稳定解析。实时进度只会在普通
+终端报告中写入 stderr，可通过 `IPCHECK_PROGRESS=auto|always|never` 控制。
 
 运行 `ipcheck --help` 可以查看完整参数。
 
