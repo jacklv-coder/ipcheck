@@ -22,7 +22,11 @@ OUTPUTS = {
     "en": ROOT / "assets" / "ipcheck-demo.gif",
     "zh": ROOT / "assets" / "ipcheck-demo-zh.gif",
 }
-WIDTH, HEIGHT = 1200, 720
+SCREENSHOTS = {
+    "en": ROOT / "assets" / "ipcheck-preview.png",
+    "zh": ROOT / "assets" / "ipcheck-preview-zh.png",
+}
+WIDTH, HEIGHT = 1200, 810
 BACKGROUND = "#0d1117"
 PANEL = "#161b22"
 TEXT = "#c9d1d9"
@@ -38,6 +42,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 def font(size: int, language: str, bold: bool = False) -> ImageFont.FreeTypeFont:
     if language == "zh":
         candidates = [
+            Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
             Path("/System/Library/Fonts/PingFang.ttc"),
             Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
             Path("/System/Library/Fonts/STHeiti Medium.ttc"),
@@ -130,10 +135,11 @@ fi
                 "HTTPS_PROXY": "http://127.0.0.1:1080",
                 "IPCHECK_LANG": language,
                 "IPCHECK_PROGRESS": "always",
+                "COLUMNS": "100",
             }
         )
         process = subprocess.run(
-            [str(ROOT / "bin" / "ipcheck"), "all", "--samples", "1", "--no-color", "--explain-score"],
+            [str(ROOT / "bin" / "ipcheck"), "all", "--samples", "1", "--no-color"],
             cwd=ROOT,
             env=environment,
             text=True,
@@ -145,55 +151,87 @@ fi
         if language == "zh":
             report_prefixes = (
                 "ipcheck v",
-                "开发建议",
-                "  现在适合开发吗？",
-                "  开发适配分：",
-                "  评分依据：",
+                "━",
+                "─",
+                "  ✓  现在适合开发吗？",
+                "  ✕  现在适合开发吗？",
+                "  100/100",
+                "  9",
+                "  8",
+                "  7",
+                "  6",
+                "  5",
+                "  4",
+                "  3",
+                "  2",
+                "  1",
+                "  0/100",
+                "  █",
+                "  评分构成",
+                "    服务链路",
+                "    下载",
+                "    上传",
                 "  当前网络",
-                "检测到的客户端",
+                "  可以正常开发",
+                "◆ 检测到的客户端",
                 "  Codex",
                 "  Claude Code",
-                "AI 服务延迟",
-                "  首字节延迟",
-                "  正常",
-                "AI 服务结论",
-                "网络带宽",
+                "◆ AI 服务延迟",
+                "  TTFB",
+                "  ✓ 可达",
+                "    HTTP",
+                "◆ AI 服务结论",
+                "  ●",
+                "◆ 网络带宽",
                 "  下载",
                 "  上传",
-                "  建议",
-                "结果：",
-                "说明：",
             )
         else:
             report_prefixes = (
                 "ipcheck v",
-                "Developer verdict",
-                "  Ready to code?",
-                "  Readiness score:",
-                "  Score breakdown:",
+                "━",
+                "─",
+                "  ✓  Ready to code?",
+                "  ✕  Ready to code?",
+                "  100/100",
+                "  9",
+                "  8",
+                "  7",
+                "  6",
+                "  5",
+                "  4",
+                "  3",
+                "  2",
+                "  1",
+                "  0/100",
+                "  █",
+                "  Score breakdown",
+                "    Service path",
+                "    Download",
+                "    Upload",
                 "  This network",
-                "Detected clients",
+                "  You can work normally",
+                "◆ Detected clients",
                 "  Codex",
                 "  Claude Code",
-                "AI service latency",
-                "  Time to first byte",
-                "  OK",
-                "AI service results",
-                "Network bandwidth",
+                "◆ AI service latency",
+                "  TTFB",
+                "  ✓ REACH",
+                "    HTTP",
+                "◆ AI service results",
+                "  ●",
+                "◆ Network bandwidth",
                 "  Download",
                 "  Upload",
-                "  Advice",
-                "Result:",
-                "Interpretation:",
             )
         report = [line for line in process.stdout.splitlines() if line.startswith(report_prefixes)]
         return [ANSI_RE.sub("", line).removeprefix("⌨ ") for line in progress + report]
 
 
 def line_color(line: str) -> str:
-    if any(token in line for token in ("95/100", "GOOD", "FAST", "Ready to code? YES", "适合", "舒适", " 快 ")):
+    if line.strip().startswith("█") or any(token in line for token in ("100/100", "Ready to code? YES", "现在适合开发吗？适合")):
         return GREEN
-    if line.startswith(("Developer verdict", "Detected clients", "AI service latency", "AI service results", "Network bandwidth", "开发建议", "检测到的客户端", "AI 服务延迟", "AI 服务结论", "网络带宽")):
+    if line.startswith(("◆ Detected clients", "◆ AI service latency", "◆ AI service results", "◆ Network bandwidth", "◆ 检测到的客户端", "◆ AI 服务延迟", "◆ AI 服务结论", "◆ 网络带宽", "ipcheck v")):
         return CYAN
     if line.startswith(("Checking", "Press Ctrl+C", "按 Ctrl+C")):
         return MUTED
@@ -213,6 +251,24 @@ def clip_line(draw: ImageDraw.ImageDraw, line: str, body_font: ImageFont.ImageFo
     return clipped + "..."
 
 
+def draw_status_line(
+    draw: ImageDraw.ImageDraw,
+    line: str,
+    position: tuple[int, int],
+    body_font: ImageFont.ImageFont,
+) -> bool:
+    colors = {"✓": GREEN, "●": GREEN, "✕": RED, "!": YELLOW}
+    if not any(symbol in line for symbol in colors):
+        return False
+    x, y = position
+    for segment in re.split(r"([✓●✕!])", line):
+        if not segment:
+            continue
+        draw.text((x, y), segment, font=body_font, fill=colors.get(segment, TEXT))
+        x += int(draw.textlength(segment, font=body_font))
+    return True
+
+
 def frame(command: str, lines: list[str], language: str) -> Image.Image:
     body_font = font(21, language)
     body_bold = font(21, language, bold=True)
@@ -229,19 +285,24 @@ def frame(command: str, lines: list[str], language: str) -> Image.Image:
     draw.text((48, 98), "$", font=body_bold, fill=GREEN)
     draw.text((76, 98), command, font=body_font, fill=TEXT)
 
-    max_lines = 24
+    max_lines = 28
     visible = lines[-max_lines:]
     y = 138
     for line in visible:
+        if line and set(line) in ({"━"}, {"─"}):
+            draw.line((48, y + 10, WIDTH - 48, y + 10), fill=MUTED, width=2)
+            y += 23
+            continue
         clipped = clip_line(draw, line, body_font)
-        draw.text((48, y), clipped, font=body_font, fill=line_color(clipped))
+        if not draw_status_line(draw, clipped, (48, y), body_font):
+            draw.text((48, y), clipped, font=body_font, fill=line_color(clipped))
         y += 23
     return image
 
 
 def render_demo(language: str) -> None:
     output = demo_output(language)
-    command = "ipcheck --lang zh --explain-score" if language == "zh" else "ipcheck --explain-score"
+    command = "ipcheck --lang zh" if language == "zh" else "ipcheck"
     frames: list[Image.Image] = []
     durations: list[int] = []
 
@@ -267,7 +328,10 @@ def render_demo(language: str) -> None:
         optimize=True,
         disposal=1,
     )
+    screenshot_path = SCREENSHOTS[language]
+    frame(command, output, language).save(screenshot_path, optimize=True)
     print(f"Rendered {output_path} ({output_path.stat().st_size / 1024:.0f} KiB, {len(frames)} frames)")
+    print(f"Rendered {screenshot_path} ({screenshot_path.stat().st_size / 1024:.0f} KiB)")
 
 
 def main() -> None:

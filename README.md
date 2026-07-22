@@ -12,35 +12,32 @@ Know whether your AI coding CLI is slow, blocked, or using the wrong gateway.
 **Codex** and **Claude Code**. It auto-detects installed clients and safe,
 non-secret routing configuration, then reports reachability, median/P95
 time-to-first-byte (TTFB), jitter, reference bandwidth, and a clear
-`GOOD`, `FAIR`, `POOR`, or `BLOCKED` result. Interactive runs show live,
+`GOOD`, `FAIR`, `POOR`, or `BLOCKED` result. Interactive runs show animated,
 color-coded progress, can be cancelled cleanly with `Ctrl+C`, and finish with
-a direct answer plus a rule-based readiness score.
+an adaptive terminal dashboard plus a rule-based readiness score.
 
 ![Animated ipcheck terminal demo](assets/ipcheck-demo.gif)
 
 ```text
 $ ipcheck
-ipcheck v0.7.0 — AI coding network diagnostics
+ipcheck v0.8.0  AI coding network check
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Developer verdict
-  Ready to code? YES
-  Readiness score: 95/100 · COMFORTABLE
+  ✓  Ready to code? YES
+  100/100  ████████████████████  COMFORTABLE
+
   This network is ready for AI-assisted development.
 
-Detected clients
-  Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
-  Claude Code  model=deepseek-v4-flash, route=https://dashscope.aliyuncs.com/apps/anthropic
+◆ AI service latency
+  ✓ REACH  ChatGPT              Codex       HTTP 401 · median 260 ms
+  ✓ REACH  Claude Messages API  Claude Code HTTP 403 · median 220 ms
 
-Service results
-  Codex        GOOD    The service path is reachable with acceptable latency and jitter.
-  Claude Code  GOOD    The service path is reachable with acceptable latency and jitter.
+◆ AI service results
+  ● Codex GOOD  ·  ● Claude Code GOOD
 
-Result: GOOD
-
-Network bandwidth
+◆ Network bandwidth
   Download  80.0 Mbps    FAST      Cloudflare, up to 2 MB
   Upload    16.0 Mbps    FAST      Cloudflare, up to 1 MB zero-filled
-  Advice    Bandwidth is sufficient for everyday AI-assisted development.
 ```
 
 ## Why ipcheck
@@ -76,7 +73,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.7.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -153,10 +150,14 @@ higher and `ADEQUATE` from 2 Mbps. Lower measurements are `SLOW`. The optional
 substantially more data than ipcheck's capped Cloudflare checks.
 
 The readiness score is a transparent heuristic, not a claim about user
-percentiles. Rule v1 starts from the service-path verdict (`90` healthy, `70`
-usable but delayed, `45` reachable but temporarily unavailable, `35` poor, or
-`0` blocked). Completed bandwidth ratings can then add up to 5 points or deduct
-up to 10; partial samples deduct 2 points each. JSON exposes `score`,
+percentiles. Rule v2 gives the least healthy detected client up to 90
+service-path points: reachability and success rate contribute 35, median TTFB
+35, P95 10, and jitter 10. Each bandwidth direction adds 5 points when fast,
+3 when adequate, deducts 5 when slow, and stays neutral when unavailable; an
+incomplete sample deducts 2 more without hiding its measured speed class.
+Usable-but-delayed paths are capped at 89, temporarily unavailable or poor
+paths at 64, and blocked paths at 0. Score labels are `COMFORTABLE` from 90,
+`GOOD` from 75, `USABLE` from 65, and `LIMITED` below 65. JSON exposes `score`,
 `score_label`, `score_method`, and the per-component `score_breakdown` for
 automation.
 

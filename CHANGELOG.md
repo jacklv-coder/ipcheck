@@ -5,10 +5,29 @@ All notable changes to ipcheck are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-23
+
+### Added
+
+- Added an adaptive terminal dashboard with score bars, concise status icons,
+  actionable bottleneck hints, and compact output for narrow terminals.
+- Added animated TTY progress while network requests are running, while keeping
+  redirected output stable and preserving graceful `Ctrl+C` cancellation.
+- Added reproducible English and Chinese static previews alongside the animated
+  terminal GIFs.
+
 ### Changed
 
 - Added a localized Chinese terminal GIF to the Chinese README while keeping
   the English demo in the English README.
+- Renamed successful endpoint status from the ambiguous `OK`/“正常” to
+  `REACH`/“可达” and condensed default per-client conclusions.
+- Replaced readiness-score rule v1 with a component-based rule v2 that scores
+  reachability, median TTFB, P95, and jitter separately and reduces the score
+  cliff at service-verdict boundaries.
+- Kept measured bandwidth speed and sample completeness as separate scoring
+  inputs, so a very slow partial estimate can no longer receive a smaller
+  penalty than a faster completed sample.
 
 ## [0.7.0] - 2026-07-22
 
@@ -103,6 +122,7 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[0.8.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.5.0...v0.6.0

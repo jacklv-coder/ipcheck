@@ -12,34 +12,31 @@
 **Claude Code** 的真实网络路径。它会自动识别本机客户端以及不含密钥的路由
 配置，测量可达性、首字节延迟（TTFB）中位数/P95、抖动和参考带宽，并给出
 明确的 `GOOD`、`FAIR`、`POOR` 或 `BLOCKED` 结论。交互运行时会显示带颜色的
-实时进度，支持通过 `Ctrl+C` 友好取消，并直接告诉你“现在是否适合开发”以及
-规则化的开发适配分。
+动态进度，支持通过 `Ctrl+C` 友好取消，并用自适应终端仪表盘直接告诉你
+“现在是否适合开发”以及规则化的开发适配分。
 
 ![ipcheck 中文终端动态演示](assets/ipcheck-demo-zh.gif)
 
 ```text
 $ ipcheck
-ipcheck v0.7.0 — AI 编程网络诊断
+ipcheck v0.8.0  AI 编程网络体检
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-开发建议
-  现在适合开发吗？适合
-  开发适配分：95/100 · 舒适
+  ✓  现在适合开发吗？适合
+  100/100  ████████████████████  舒适
+
   当前网络适合进行 AI 辅助开发。
 
-Detected clients
-  Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
-  Claude Code  model=deepseek-v4-flash, route=https://dashscope.aliyuncs.com/apps/anthropic
+◆ AI 服务延迟
+  ✓ 可达  ChatGPT              Codex       HTTP 401 · 中位 260 ms
+  ✓ 可达  Claude Messages API  Claude Code HTTP 403 · 中位 220 ms
 
-Service results
-  Codex        GOOD
-  Claude Code  GOOD
+◆ AI 服务结论
+  ● Codex 良好  ·  ● Claude Code 良好
 
-Result: GOOD
-
-网络带宽
+◆ 网络带宽
   下载  80.0 Mbps    快    Cloudflare，最多 2 MB
   上传  16.0 Mbps    快    Cloudflare，最多 1 MB 零字节
-  建议  当前带宽足以支持日常 AI 辅助开发。
 ```
 
 ## 核心能力
@@ -70,7 +67,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.7.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -138,11 +135,14 @@ ipcheck --no-upload
 “慢”。可选的 `--system` 会交给 macOS `networkQuality` 测试，消耗的数据量
 可能明显高于 ipcheck 自带的限量 Cloudflare 测试。
 
-开发适配分是透明的规则评分，不代表“超过多少用户”的百分位。规则 v1 根据
-服务链路结论从 90（健康）、70（可用但偏慢）、45（可达但服务暂不可用）、
-35（较差）或 0（阻断）起算；完整的上下行测速最多加 5 分或扣 10 分，部分
-样本每项扣 2 分。JSON 会输出 `score`、`score_label`、`score_method`，以及逐项的
-`score_breakdown`。
+开发适配分是透明的规则评分，不代表“超过多少用户”的百分位。规则 v2 对最弱的
+客户端链路计算最多 90 分：可达性和成功率占 35 分、TTFB 中位数占 35 分、
+P95 占 10 分、抖动占 10 分。下载和上传分别在“快”时加 5 分、“够用”时加
+3 分、“慢”时扣 5 分，不可用时不加不扣；部分样本会在保留实际速度等级的
+基础上再扣 2 分。可用但偏慢的链路最高 89 分，暂时不可用或较差的链路最高
+64 分，阻断链路为 0 分。90 分起为“舒适”、75 分起为“良好”、65 分起为
+“可用”，低于 65 分为“受限”。JSON 会输出 `score`、`score_label`、
+`score_method`，以及逐项的 `score_breakdown`。
 
 运行 `ipcheck --help` 可以查看完整参数。
 
