@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Render the README GIF from deterministic output of the real ipcheck CLI.
+"""Render English and Chinese README GIFs from the real ipcheck CLI.
 
-Requires Python 3 and Pillow. No live service or credential is used.
+Requires Python 3, Pillow, and a CJK font for the Chinese demo. No live service
+or credential is used.
 """
 
 from __future__ import annotations
@@ -10,13 +11,17 @@ import os
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "assets" / "ipcheck-demo.gif"
+OUTPUTS = {
+    "en": ROOT / "assets" / "ipcheck-demo.gif",
+    "zh": ROOT / "assets" / "ipcheck-demo-zh.gif",
+}
 WIDTH, HEIGHT = 1200, 720
 BACKGROUND = "#0d1117"
 PANEL = "#161b22"
@@ -29,23 +34,35 @@ RED = "#f85149"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    candidates = [
-        Path("/System/Library/Fonts/Menlo.ttc"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
-    ]
+@lru_cache(maxsize=None)
+def font(size: int, language: str, bold: bool = False) -> ImageFont.FreeTypeFont:
+    if language == "zh":
+        candidates = [
+            Path("/System/Library/Fonts/PingFang.ttc"),
+            Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+            Path("/System/Library/Fonts/STHeiti Medium.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+        ]
+    else:
+        candidates = [
+            Path("/System/Library/Fonts/Menlo.ttc"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+        ]
     for candidate in candidates:
         if candidate.exists():
-            return ImageFont.truetype(str(candidate), size=size, index=1 if bold and candidate.suffix == ".ttc" else 0)
+            index = 1 if language == "en" and bold and candidate.suffix == ".ttc" else 0
+            return ImageFont.truetype(str(candidate), size=size, index=index)
+    if language == "zh":
+        raise RuntimeError(
+            "Chinese demo requires a CJK font (PingFang, Hiragino Sans GB, "
+            "STHeiti, Noto Sans CJK, or WenQuanYi Micro Hei)."
+        )
     return ImageFont.load_default()
 
 
-BODY_FONT = font(21)
-BODY_BOLD = font(21, bold=True)
-TITLE_FONT = font(17, bold=True)
-
-
-def demo_output() -> list[str]:
+def demo_output(language: str) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="ipcheck-demo-") as directory:
         fixture = Path(directory)
         home = fixture / "home"
@@ -111,7 +128,7 @@ fi
                 "CODEX_HOME": str(codex),
                 "CLAUDE_CONFIG_DIR": str(claude),
                 "HTTPS_PROXY": "http://127.0.0.1:1080",
-                "IPCHECK_LANG": "en",
+                "IPCHECK_LANG": language,
                 "IPCHECK_PROGRESS": "always",
             }
         )
@@ -124,96 +141,138 @@ fi
             stderr=subprocess.PIPE,
             check=True,
         )
-        progress = [line for line in process.stderr.splitlines() if "Ctrl+C" in line or line.startswith("Checking")]
-        report_prefixes = (
-            "ipcheck v",
-            "Developer verdict",
-            "  Ready to code?",
-            "  Readiness score:",
-            "  Score breakdown:",
-            "  This network",
-            "Detected clients",
-            "  Codex",
-            "  Claude Code",
-            "AI service latency",
-            "  Time to first byte",
-            "  OK",
-            "AI service results",
-            "Network bandwidth",
-            "  Download",
-            "  Upload",
-            "  Advice",
-            "Result:",
-            "Interpretation:",
-        )
+        progress = [line for line in process.stderr.splitlines() if "Ctrl+C" in line]
+        if language == "zh":
+            report_prefixes = (
+                "ipcheck v",
+                "开发建议",
+                "  现在适合开发吗？",
+                "  开发适配分：",
+                "  评分依据：",
+                "  当前网络",
+                "检测到的客户端",
+                "  Codex",
+                "  Claude Code",
+                "AI 服务延迟",
+                "  首字节延迟",
+                "  正常",
+                "AI 服务结论",
+                "网络带宽",
+                "  下载",
+                "  上传",
+                "  建议",
+                "结果：",
+                "说明：",
+            )
+        else:
+            report_prefixes = (
+                "ipcheck v",
+                "Developer verdict",
+                "  Ready to code?",
+                "  Readiness score:",
+                "  Score breakdown:",
+                "  This network",
+                "Detected clients",
+                "  Codex",
+                "  Claude Code",
+                "AI service latency",
+                "  Time to first byte",
+                "  OK",
+                "AI service results",
+                "Network bandwidth",
+                "  Download",
+                "  Upload",
+                "  Advice",
+                "Result:",
+                "Interpretation:",
+            )
         report = [line for line in process.stdout.splitlines() if line.startswith(report_prefixes)]
         return [ANSI_RE.sub("", line).removeprefix("⌨ ") for line in progress + report]
 
 
 def line_color(line: str) -> str:
-    if any(token in line for token in ("95/100", "GOOD", "FAST", "Ready to code? YES")):
+    if any(token in line for token in ("95/100", "GOOD", "FAST", "Ready to code? YES", "适合", "舒适", " 快 ")):
         return GREEN
-    if line.startswith(("Developer verdict", "Detected clients", "AI service latency", "Network bandwidth")):
+    if line.startswith(("Developer verdict", "Detected clients", "AI service latency", "AI service results", "Network bandwidth", "开发建议", "检测到的客户端", "AI 服务延迟", "AI 服务结论", "网络带宽")):
         return CYAN
-    if line.startswith(("Checking", "Press Ctrl+C")):
+    if line.startswith(("Checking", "Press Ctrl+C", "按 Ctrl+C")):
         return MUTED
-    if "!" in line or "WARNING" in line:
+    if "!" in line or "WARNING" in line or "注意" in line:
         return YELLOW
-    if "BLOCKED" in line or "POOR" in line:
+    if "BLOCKED" in line or "POOR" in line or "阻断" in line or "较差" in line:
         return RED
     return TEXT
 
 
-def frame(command: str, lines: list[str]) -> Image.Image:
+def clip_line(draw: ImageDraw.ImageDraw, line: str, body_font: ImageFont.ImageFont) -> str:
+    if draw.textlength(line, font=body_font) <= WIDTH - 96:
+        return line
+    clipped = line
+    while clipped and draw.textlength(clipped + "...", font=body_font) > WIDTH - 96:
+        clipped = clipped[:-1]
+    return clipped + "..."
+
+
+def frame(command: str, lines: list[str], language: str) -> Image.Image:
+    body_font = font(21, language)
+    body_bold = font(21, language, bold=True)
+    title_font = font(17, language, bold=True)
     image = Image.new("RGB", (WIDTH, HEIGHT), BACKGROUND)
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((22, 18, WIDTH - 22, HEIGHT - 18), radius=16, fill=PANEL, outline="#30363d", width=2)
     draw.ellipse((48, 42, 66, 60), fill="#ff5f56")
     draw.ellipse((76, 42, 94, 60), fill="#ffbd2e")
     draw.ellipse((104, 42, 122, 60), fill="#27c93f")
-    draw.text((WIDTH // 2, 51), "ipcheck — terminal", font=TITLE_FONT, fill=MUTED, anchor="mm")
+    title = "ipcheck — 终端" if language == "zh" else "ipcheck — terminal"
+    draw.text((WIDTH // 2, 51), title, font=title_font, fill=MUTED, anchor="mm")
     draw.line((44, 78, WIDTH - 44, 78), fill="#30363d", width=1)
-    draw.text((48, 98), "$", font=BODY_BOLD, fill=GREEN)
-    draw.text((76, 98), command, font=BODY_FONT, fill=TEXT)
+    draw.text((48, 98), "$", font=body_bold, fill=GREEN)
+    draw.text((76, 98), command, font=body_font, fill=TEXT)
 
     max_lines = 24
     visible = lines[-max_lines:]
     y = 138
     for line in visible:
-        clipped = line if len(line) <= 91 else line[:88] + "..."
-        draw.text((48, y), clipped, font=BODY_FONT, fill=line_color(clipped))
+        clipped = clip_line(draw, line, body_font)
+        draw.text((48, y), clipped, font=body_font, fill=line_color(clipped))
         y += 23
     return image
 
 
-def main() -> None:
-    output = demo_output()
-    command = "ipcheck --explain-score"
+def render_demo(language: str) -> None:
+    output = demo_output(language)
+    command = "ipcheck --lang zh --explain-score" if language == "zh" else "ipcheck --explain-score"
     frames: list[Image.Image] = []
     durations: list[int] = []
 
     for index in range(0, len(command) + 1, 2):
-        frames.append(frame(command[:index] + ("▋" if index < len(command) else ""), []))
+        frames.append(frame(command[:index] + ("▋" if index < len(command) else ""), [], language))
         durations.append(80)
-    frames.append(frame(command, []))
+    frames.append(frame(command, [], language))
     durations.append(350)
 
     for index in range(1, len(output) + 1):
-        frames.append(frame(command, output[:index]))
+        frames.append(frame(command, output[:index], language))
         durations.append(95 if output[index - 1] else 45)
     durations[-1] = 3200
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUTS[language]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
-        OUTPUT,
+        output_path,
         save_all=True,
         append_images=frames[1:],
         duration=durations,
         loop=0,
         optimize=True,
-        disposal=2,
+        disposal=1,
     )
-    print(f"Rendered {OUTPUT} ({OUTPUT.stat().st_size / 1024:.0f} KiB, {len(frames)} frames)")
+    print(f"Rendered {output_path} ({output_path.stat().st_size / 1024:.0f} KiB, {len(frames)} frames)")
+
+
+def main() -> None:
+    for language in OUTPUTS:
+        render_demo(language)
 
 
 if __name__ == "__main__":

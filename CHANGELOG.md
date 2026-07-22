@@ -3,6 +3,13 @@
 All notable changes to ipcheck are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Added a localized Chinese terminal GIF to the Chinese README while keeping
+  the English demo in the English README.
+
 ## [0.7.0] - 2026-07-22
 
 ### Added

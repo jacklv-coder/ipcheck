@@ -15,7 +15,7 @@
 实时进度，支持通过 `Ctrl+C` 友好取消，并直接告诉你“现在是否适合开发”以及
 规则化的开发适配分。
 
-![ipcheck 终端动态演示](assets/ipcheck-demo.gif)
+![ipcheck 中文终端动态演示](assets/ipcheck-demo-zh.gif)
 
 ```text
 $ ipcheck
