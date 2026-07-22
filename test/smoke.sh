@@ -104,10 +104,22 @@ chmod +x "$STUB_DIR/curl"
 
 MINIMAL_BIN="$STUB_DIR/minimal-bin"
 mkdir -p "$MINIMAL_BIN"
-for utility in bash awk sed sort mktemp rm tr date head; do
+for utility in bash awk sed sort mktemp rm tr date head env; do
   ln -s "$(command -v "$utility")" "$MINIMAL_BIN/$utility"
 done
 ln -s "$STUB_DIR/curl" "$MINIMAL_BIN/curl"
+
+MAC_LANG_BIN="$STUB_DIR/mac-lang-bin"
+mkdir -p "$MAC_LANG_BIN"
+cat > "$MAC_LANG_BIN/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Darwin\n'
+EOF
+cat > "$MAC_LANG_BIN/defaults" <<'EOF'
+#!/usr/bin/env bash
+printf '(\n    "%s"\n)\n' "${IPCHECK_TEST_APPLE_LANG:-en}"
+EOF
+chmod +x "$MAC_LANG_BIN/uname" "$MAC_LANG_BIN/defaults"
 
 cat > "$STUB_DIR/networkQuality" <<'EOF'
 #!/usr/bin/env bash
@@ -173,7 +185,7 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.6.0" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.6.1" ]
 
 : > "$CURL_LOG"
 report=$(ANTHROPIC_AUTH_TOKEN="runtime-secret-must-never-appear" run_ipcheck --samples 3 --no-bandwidth --json)
@@ -285,6 +297,18 @@ printf '%s\n' "$chinese_human" | grep -q '首字节延迟（TTFB）'
 
 english_override=$(LANG=zh_CN.UTF-8 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
 printf '%s\n' "$english_override" | grep -q 'Ready to code? YES'
+
+unsupported_language=$(PATH="$MINIMAL_BIN" LC_ALL= LC_MESSAGES= LANG=ja_JP.UTF-8 IPCHECK_LANG=auto run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
+printf '%s\n' "$unsupported_language" | grep -q 'Ready to code? YES'
+if printf '%s\n' "$unsupported_language" | grep -q '现在适合开发吗'; then
+  printf 'unsupported system language did not fall back to English\n' >&2
+  exit 1
+fi
+
+mac_unsupported_language=$(PATH="$MAC_LANG_BIN:$MINIMAL_BIN" LC_ALL=C IPCHECK_LANG=auto IPCHECK_TEST_APPLE_LANG=ja-JP run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
+printf '%s\n' "$mac_unsupported_language" | grep -q 'Ready to code? YES'
+mac_chinese_language=$(PATH="$MAC_LANG_BIN:$MINIMAL_BIN" LC_ALL=C IPCHECK_LANG=auto IPCHECK_TEST_APPLE_LANG=zh-Hans run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://language.invalid)
+printf '%s\n' "$mac_chinese_language" | grep -q '现在适合开发吗？适合'
 
 progress_log="$STUB_DIR/progress.log"
 IPCHECK_PROGRESS=always IPCHECK_LANG=en run_ipcheck --samples 2 --no-bandwidth --endpoint https://progress.invalid >/dev/null 2>"$progress_log"
