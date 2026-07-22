@@ -12,15 +12,17 @@
 **Claude Code** 的真实网络路径。它会自动识别本机客户端以及不含密钥的路由
 配置，测量可达性、首字节延迟（TTFB）中位数/P95、抖动和参考带宽，并给出
 明确的 `GOOD`、`FAIR`、`POOR` 或 `BLOCKED` 结论。交互运行时会显示带颜色的
-实时进度，并直接告诉你“现在是否适合开发”。
+实时进度，支持通过 `Ctrl+C` 友好取消，并直接告诉你“现在是否适合开发”以及
+规则化的开发适配分。
 
 ```text
-$ ipcheck --quick
-ipcheck v0.5.0 — AI 编程网络诊断
+$ ipcheck
+ipcheck v0.6.0 — AI 编程网络诊断
 
 开发建议
-  现在适合开发吗？可以，但会有些慢
-  当前可以开发，但响应速度可能不够理想。
+  现在适合开发吗？适合
+  开发适配分：95/100 · 舒适
+  当前网络适合进行 AI 辅助开发。
 
 Detected clients
   Codex        model=gpt-5.6-sol, route=https://chatgpt.com + https://api.openai.com
@@ -66,7 +68,7 @@ brew install ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.5.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.6.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -113,6 +115,9 @@ ipcheck --no-upload
 枚举值和诊断原因始终保持英文，方便自动化脚本稳定解析。实时进度只会在普通
 终端报告中写入 stderr，可通过 `IPCHECK_PROGRESS=auto|always|never` 控制。
 
+交互运行开始时会提示“按 Ctrl+C 可随时取消”。收到中断后，ipcheck 会清除
+动态进度行、显示“已取消”、删除临时文件，并使用标准退出码 `130` 结束。
+
 “服务链路”测量的是首字节延迟和抖动，并不是下载速度。独立的“网络带宽”模块
 会通过报告中注明的代理/网络路径下载最多 2 MB，并上传最多 1 MB 全零测试数据，然后按
 日常开发需求分别评级。带宽不会掩盖 AI 服务本身的高延迟或不稳定。使用
@@ -122,6 +127,11 @@ ipcheck --no-upload
 “够用”；上传达到 10 Mbps 为“快”，达到 2 Mbps 为“够用”；低于这些范围为
 “慢”。可选的 `--system` 会交给 macOS `networkQuality` 测试，消耗的数据量
 可能明显高于 ipcheck 自带的限量 Cloudflare 测试。
+
+开发适配分是透明的规则评分，不代表“超过多少用户”的百分位。规则 v1 根据
+服务链路结论从 90（健康）、70（可用但偏慢）、45（可达但服务暂不可用）、
+35（较差）或 0（阻断）起算；完整的上下行测速最多加 5 分或扣 10 分，部分
+样本每项扣 2 分。JSON 会输出 `score`、`score_label` 和 `score_method`。
 
 运行 `ipcheck --help` 可以查看完整参数。
 

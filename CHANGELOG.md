@@ -3,6 +3,15 @@
 All notable changes to ipcheck are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-07-22
+
+### Added
+
+- A visible `Ctrl+C` cancellation hint and graceful interrupt handling with
+  localized feedback, temporary-file cleanup, and exit status 130.
+- A transparent 0–100 developer-readiness score in human, Markdown, and JSON
+  reports. The score is explicitly rule-based rather than a user percentile.
+
 ## [0.5.0] - 2026-07-22
 
 ### Added
@@ -71,6 +80,7 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
+[0.6.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.2.0...v0.3.0
