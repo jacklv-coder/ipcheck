@@ -1,4 +1,4 @@
-# Routes, proxies, and bandwidth
+# Routes, proxies, and reference transfers
 
 [README](../README.md) · [简体中文](network.zh-CN.md)
 
@@ -67,16 +67,33 @@ Given this Claude Code configuration:
 `https://dashscope.aliyuncs.com/apps/anthropic/v1/messages` with an empty,
 unauthenticated protocol request. It never reads `ANTHROPIC_AUTH_TOKEN`.
 
-## Reference bandwidth
+## Cloudflare reference transfer
 
 The service table measures time to first byte and jitter; it is not a transfer
-speed test. The separate bandwidth section:
+speed test. The separate reference-transfer section:
 
-- downloads at most 2 MB from Cloudflare;
-- uploads at most 1 MB of zero-filled data;
+- downloads one capped sample of at most 2 MB from Cloudflare;
+- uploads one capped sample of at most 1 MB of zero-filled data;
 - uses the reported proxy/network path;
 - treats incomplete transfers as estimates;
-- never lets high bandwidth hide an unhealthy service route.
+- never adds readiness points for a high result.
+
+`https://speed.cloudflare.com/__down` is the download API used by
+[Cloudflare's official speed-test engine](https://github.com/cloudflare/speedtest).
+The official engine combines repeated transfers at multiple sizes; ipcheck's
+single capped transfer deliberately does not reproduce that methodology.
+
+The sample answers a narrow question: how a small transfer to Cloudflare
+behaved on the current proxy/network path at that moment. It is not:
+
+- an ISP or peak-bandwidth benchmark;
+- a measurement of OpenAI, Anthropic, GitHub, or npm throughput;
+- a substitute for the service-specific reachability and TTFB probes.
+
+A complete low sample can deduct two readiness points per direction. A high or
+moderate sample adds no points, an unavailable/skipped sample has no effect,
+and an incomplete sample deducts one point per direction. This keeps the
+reference signal secondary to the actual AI service path.
 
 Use `--no-upload` to skip upload only, or `--no-bandwidth` to skip both. The
 optional `--system` flag runs macOS `networkQuality`, which may transfer
