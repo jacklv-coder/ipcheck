@@ -8,13 +8,24 @@
 
 | Client | Route |
 | --- | --- |
-| Codex defaults | ChatGPT and OpenAI reachability paths |
+| Codex defaults | ChatGPT Codex or OpenAI Responses protocol route, ordered by detected login mode |
 | Codex custom provider | Configured base URL plus `/v1/responses` when needed |
 | Claude Code | `${ANTHROPIC_BASE_URL}/v1/messages` |
 | Custom | Credential-free URL supplied with `--endpoint` or `IPCHECK_ENDPOINTS` |
 
 `CODEX_NETWORK_ENDPOINTS` remains supported for compatibility. Claude-specific
 overrides can use `CLAUDE_NETWORK_ENDPOINTS`.
+
+Codex's built-in Amazon Bedrock provider uses provider-specific authentication.
+Without `CODEX_NETWORK_ENDPOINTS`, ipcheck reports it as `SKIPPED` rather than
+probing an unrelated OpenAI route.
+
+Direct Anthropic and Anthropic-compatible gateways are auto-probed. Provider-
+native modes such as Amazon Bedrock, Google Vertex AI, Foundry, and Mantle use
+provider-specific authenticated protocols, so `ipcheck` skips automatic Anthropic probing and asks for an explicit
+credential-free `CLAUDE_NETWORK_ENDPOINTS` route instead of reporting a result
+for the wrong provider. The provider appears as `SKIPPED` and the overall result
+is `UNAVAILABLE` when no other client route can be measured.
 
 ## Proxy behavior
 
@@ -23,10 +34,15 @@ with credentials redacted.
 
 - Codex and custom checks can fall back to the macOS system HTTPS proxy when no
   HTTPS proxy environment variable is configured.
-- Claude Code documents `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`, but not
-  `ALL_PROXY` or SOCKS proxies.
+- Current Claude Code builds honor `HTTPS_PROXY`, `HTTP_PROXY`, and
+  `NO_PROXY`/`no_proxy` bypass rules. Anthropic's public corporate-proxy page
+  may still describe `NO_PROXY` as unsupported. `ALL_PROXY` and SOCKS proxies
+  are not used for Claude probes.
 - Claude probes therefore ignore `ALL_PROXY` unless `HTTPS_PROXY` or
   `HTTP_PROXY` is also configured.
+- Claude probes do not explicitly copy the macOS HTTP proxy into curl. System,
+  VPN, or TUN routing can still carry that traffic, so this is not labeled as a
+  guaranteed direct connection.
 - `ipcheck` warns when the detected proxy is incompatible or likely to differ
   from the client's actual route.
 

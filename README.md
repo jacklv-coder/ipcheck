@@ -12,7 +12,8 @@ proxy before it breaks your coding flow.
 `ipcheck` is a zero-dependency Bash CLI that tests the real service routes used
 by AI coding clients. It reports reachability, median/P95 time to first byte,
 jitter, reference download/upload speed, and a plain-language readiness score.
-It never reads API keys, sends prompts, or makes billable model requests.
+No Codex or Claude login is required. It never reads API keys, sends prompts,
+or makes billable model requests.
 
 ![Animated ipcheck terminal demo showing healthy and limited networks](assets/ipcheck-demo.gif)
 
@@ -34,7 +35,7 @@ brew upgrade ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.1/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.2/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -71,9 +72,15 @@ interactive bottlenecks directly.
 
 | Client | Configuration detected | Route tested |
 | --- | --- | --- |
-| Codex | `$CODEX_HOME/config.toml`, `model`, `openai_base_url`, custom provider | ChatGPT/OpenAI defaults or configured `/v1/responses` |
+| Codex | `$CODEX_HOME/config.toml`, login mode, `model`, `openai_base_url`, custom provider | ChatGPT Codex or OpenAI `/responses`, matching the detected login when possible |
 | Claude Code | `settings.json`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` | Configured `${ANTHROPIC_BASE_URL}/v1/messages` |
 | Custom | `--endpoint`, `IPCHECK_ENDPOINTS` | User-provided HTTP/HTTPS endpoint |
+
+Direct OpenAI/ChatGPT, Anthropic, and compatible gateway routes are auto-probed.
+Provider-native routes need an explicit credential-free endpoint: use
+`CODEX_NETWORK_ENDPOINTS` for Codex on Bedrock, or `CLAUDE_NETWORK_ENDPOINTS`
+for Claude Code provider-native protocols such as Bedrock, Vertex AI, Foundry,
+or Mantle. `ipcheck` warns instead of silently testing the wrong provider.
 
 ## Common commands
 
@@ -99,9 +106,14 @@ Run `ipcheck --help` for every option and environment variable.
 | `FAIR` | Usable, but delayed, intermittent, rate-limited, or temporarily unhealthy |
 | `POOR` | Very slow, unstable, mostly unavailable, or using an invalid API route |
 | `BLOCKED` | No service response, or the proxy rejected the request first |
+| `UNAVAILABLE` | A provider-specific route was not measured without an explicit safe endpoint |
 
 HTTP `401` and `403` count as reachable because DNS, proxying, TLS, and HTTP
 reached the API route. HTTP `407` means the proxy blocked the request.
+
+TTFB is measured from a credential-free protocol request. It reflects DNS,
+proxy, TLS, network, and gateway ingress—not authenticated model generation or
+time to the model's first token.
 
 The 0–100 score is a transparent rule, not a user percentile. It prioritizes
 service reachability and latency over peak bandwidth. See

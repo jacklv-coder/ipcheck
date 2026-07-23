@@ -4,11 +4,18 @@
 
 `ipcheck` uses two related signals:
 
-- a service result: `GOOD`, `FAIR`, `POOR`, or `BLOCKED`;
+- a measured service result: `GOOD`, `FAIR`, `POOR`, or `BLOCKED`, plus
+  `SKIPPED` when a provider-specific route cannot be probed safely;
 - a 0–100 development-readiness score calculated with `rule_v2`.
 
 The score is a transparent heuristic, not a user percentile or a benchmark of
 model intelligence.
+
+TTFB comes from credential-free protocol probes. It includes DNS, proxy, TLS,
+network, and gateway ingress, but not authentication or model generation. P95
+uses the nearest-rank method; with the default three samples it is effectively
+the slowest sample. Jitter is the root-mean-square deviation from the sample
+median. Use more samples when comparing close results.
 
 ## Service results
 
@@ -18,12 +25,17 @@ model intelligence.
 | `FAIR` | Reachable with median TTFB below 3,000 ms, recoverable failures, rate limiting, or server errors |
 | `POOR` | Primary success below 60%, median TTFB at least 3,000 ms, or HTTP 404 on a configured API route |
 | `BLOCKED` | No primary HTTP response, or proxy authentication stopped the request with HTTP 407 |
+| `SKIPPED` | The provider needs an explicit credential-free endpoint before it can be measured |
 
 With multiple clients, results remain independent. If every client is blocked,
 the overall result is `BLOCKED`; if blocked and reachable clients are mixed, it
 is `POOR`; otherwise the least healthy client result is used. The readiness
 score always uses the lowest-scoring service path, so a healthy Claude route
 cannot hide a broken Codex route.
+
+Skipped clients do not affect another measured client's score. If every
+selected client is skipped, the overall result is `UNAVAILABLE`, the score is
+0, and the command exits with status 1.
 
 ## Rule v2 service-path points
 

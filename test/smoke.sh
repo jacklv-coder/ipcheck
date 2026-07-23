@@ -5,6 +5,10 @@ set -eu
 # Keep report-language assertions deterministic regardless of the host locale.
 IPCHECK_LANG=en
 export IPCHECK_LANG
+unset CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_ANTHROPIC_AWS \
+  CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD CLAUDE_CODE_USE_MANTLE \
+  ANTHROPIC_FOUNDRY_BASE_URL ANTHROPIC_AWS_BASE_URL \
+  ANTHROPIC_GOOGLE_CLOUD_BASE_URL ANTHROPIC_BEDROCK_MANTLE_BASE_URL
 
 PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipcheck-test.XXXXXX")
@@ -37,6 +41,8 @@ is_score_scenario=0
 printf 'env:HTTPS_PROXY=%s\n' "${HTTPS_PROXY-}" >> "${IPCHECK_TEST_CURL_LOG:?}"
 printf 'env:http_proxy=%s\n' "${http_proxy-}" >> "${IPCHECK_TEST_CURL_LOG:?}"
 printf 'env:ALL_PROXY=%s\n' "${ALL_PROXY-}" >> "${IPCHECK_TEST_CURL_LOG:?}"
+printf 'env:NO_PROXY=%s\n' "${NO_PROXY-}" >> "${IPCHECK_TEST_CURL_LOG:?}"
+printf 'env:no_proxy=%s\n' "${no_proxy-}" >> "${IPCHECK_TEST_CURL_LOG:?}"
 for argument in "$@"; do
   printf '%s\n' "$argument" >> "${IPCHECK_TEST_CURL_LOG:?}"
   case "$argument" in
@@ -116,6 +122,25 @@ fi
 EOF
 chmod +x "$STUB_DIR/curl"
 
+cat > "$STUB_DIR/codex" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1-}" = "login" ] && [ "${2-}" = "status" ]; then
+  if [ -n "${IPCHECK_TEST_CODEX_ENV_LOG-}" ] && \
+     { [ -n "${CODEX_API_KEY-}" ] || [ -n "${OPENAI_API_KEY-}" ] || \
+       [ -n "${CODEX_ACCESS_TOKEN-}" ] || [ -n "${AWS_BEARER_TOKEN_BEDROCK-}" ]; }; then
+    printf 'credential inherited\n' >> "$IPCHECK_TEST_CODEX_ENV_LOG"
+  fi
+  if [ "${IPCHECK_TEST_CODEX_STATUS_STDERR:-0}" -eq 1 ]; then
+    printf '%s\n' "${IPCHECK_TEST_CODEX_LOGIN_STATUS:-Logged in using ChatGPT}" >&2
+  else
+    printf '%s\n' "${IPCHECK_TEST_CODEX_LOGIN_STATUS:-Logged in using ChatGPT}"
+  fi
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$STUB_DIR/codex"
+
 MINIMAL_BIN="$STUB_DIR/minimal-bin"
 mkdir -p "$MINIMAL_BIN"
 for utility in bash awk sed sort mktemp rm tr date head env; do
@@ -178,8 +203,11 @@ EOF
 run_ipcheck() {
   env \
     -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL \
+    -u ANTHROPIC_BEDROCK_BASE_URL -u ANTHROPIC_VERTEX_BASE_URL \
+    -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
     -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
     -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
+    -u CODEX_API_KEY -u OPENAI_API_KEY \
     -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
     PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
     HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_LANG="${IPCHECK_LANG:-en}" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
@@ -189,8 +217,11 @@ run_ipcheck() {
 run_ipcheck_direct() {
   env \
     -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL \
+    -u ANTHROPIC_BEDROCK_BASE_URL -u ANTHROPIC_VERTEX_BASE_URL \
+    -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
     -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
     -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
+    -u CODEX_API_KEY -u OPENAI_API_KEY \
     -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
     PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
     IPCHECK_LANG="${IPCHECK_LANG:-en}" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
@@ -199,16 +230,71 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.8.1" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.8.2" ]
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q -- '--explain-score'
 
 : > "$CURL_LOG"
 report=$(ANTHROPIC_AUTH_TOKEN="runtime-secret-must-never-appear" run_ipcheck --samples 3 --no-bandwidth --json)
-printf '%s\n' "$report" | grep -q '"schema_version":1'
+printf '%s\n' "$report" | grep -q '"schema_version":2'
 printf '%s\n' "$report" | grep -q '"result":"good"'
 printf '%s\n' "$report" | grep -q '"reachable_endpoints":3'
 printf '%s\n' "$report" | grep -q '"id":"codex"'
 printf '%s\n' "$report" | grep -q '"model":"gpt-test"'
+printf '%s\n' "$report" | grep -q '"config_source":"Codex ChatGPT login"'
+printf '%s\n' "$report" | grep -q '"label":"ChatGPT Codex API","url":"https://chatgpt.com/backend-api/codex/responses","primary":true'
+printf '%s\n' "$report" | grep -q '"label":"OpenAI Responses API","url":"https://api.openai.com/v1/responses","primary":false'
+
+codex_stderr_status_report=$(IPCHECK_TEST_CODEX_STATUS_STDERR=1 run_ipcheck codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$codex_stderr_status_report" | grep -q '"config_source":"Codex ChatGPT login"'
+printf '%s\n' "$codex_stderr_status_report" | grep -q '"label":"ChatGPT Codex API","url":"https://chatgpt.com/backend-api/codex/responses","primary":true'
+
+codex_stored_api_key_report=$(IPCHECK_TEST_CODEX_STATUS_STDERR=1 IPCHECK_TEST_CODEX_LOGIN_STATUS='Logged in using an API key' run_ipcheck codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$codex_stored_api_key_report" | grep -q '"config_source":"Codex API key login"'
+printf '%s\n' "$codex_stored_api_key_report" | grep -q '"label":"OpenAI Responses API","url":"https://api.openai.com/v1/responses","primary":true'
+
+codex_status_env_log="$STUB_DIR/codex-status-env.log"
+codex_mixed_auth_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u CODEX_API_KEY \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
+  OPENAI_API_KEY="fixture-api-key" IPCHECK_TEST_CODEX_STATUS_STDERR=1 \
+  IPCHECK_TEST_CODEX_ENV_LOG="$codex_status_env_log" \
+  IPCHECK_TEST_CODEX_LOGIN_STATUS='Logged in using ChatGPT' HTTPS_PROXY="http://127.0.0.1:1080" \
+  IPCHECK_LANG=en IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$codex_mixed_auth_report" | grep -q '"config_source":"Codex API key login"'
+printf '%s\n' "$codex_mixed_auth_report" | grep -q '"label":"OpenAI Responses API","url":"https://api.openai.com/v1/responses","primary":true'
+[ ! -e "$codex_status_env_log" ]
+
+codex_access_status_env_log="$STUB_DIR/codex-access-status-env.log"
+codex_access_token_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u CODEX_API_KEY -u OPENAI_API_KEY \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
+  CODEX_ACCESS_TOKEN="fixture-access-token" AWS_BEARER_TOKEN_BEDROCK="fixture-bedrock-token" \
+  IPCHECK_TEST_CODEX_STATUS_STDERR=1 IPCHECK_TEST_CODEX_ENV_LOG="$codex_access_status_env_log" \
+  IPCHECK_TEST_CODEX_LOGIN_STATUS='Logged in using ChatGPT' HTTPS_PROXY="http://127.0.0.1:1080" \
+  IPCHECK_LANG=en IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$codex_access_token_report" | grep -q '"config_source":"Codex ChatGPT login"'
+[ ! -e "$codex_access_status_env_log" ]
+
+codex_key_trace="$STUB_DIR/codex-key.trace"
+env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u CODEX_API_KEY \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
+  OPENAI_API_KEY="fixture-key-must-not-appear" HTTPS_PROXY="http://127.0.0.1:1080" \
+  IPCHECK_LANG=en IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  bash -x "$PROJECT_DIR/bin/ipcheck" codex --samples 1 --no-bandwidth --json \
+  >/dev/null 2>"$codex_key_trace"
+if grep -q 'fixture-key-must-not-appear' "$codex_key_trace"; then
+  printf 'API key leaked into shell trace\n' >&2
+  exit 1
+fi
 printf '%s\n' "$report" | grep -q '"id":"claude"'
 printf '%s\n' "$report" | grep -q '"model":"deepseek-v4-flash"'
 printf '%s\n' "$report" | grep -q 'https://dashscope.aliyuncs.com/apps/anthropic'
@@ -231,6 +317,24 @@ fi
 
 if command -v python3 >/dev/null 2>&1; then
   REPORT_JSON="$report" python3 -c 'import json, os; json.loads(os.environ["REPORT_JSON"])'
+fi
+
+api_key_report=$(IPCHECK_TEST_CODEX_LOGIN_STATUS="Logged in using an API key" run_ipcheck codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$api_key_report" | grep -q '"config_source":"Codex API key login"'
+printf '%s\n' "$api_key_report" | grep -q '"label":"OpenAI Responses API","url":"https://api.openai.com/v1/responses","primary":true'
+printf '%s\n' "$api_key_report" | grep -q '"label":"ChatGPT Codex API","url":"https://chatgpt.com/backend-api/codex/responses","primary":false'
+
+set +e
+codex_bedrock_login_report=$(IPCHECK_TEST_CODEX_LOGIN_STATUS="Logged in using Amazon Bedrock API key" run_ipcheck codex --samples 1 --no-bandwidth --json)
+codex_bedrock_login_exit=$?
+set -e
+[ "$codex_bedrock_login_exit" -eq 1 ]
+printf '%s\n' "$codex_bedrock_login_report" | grep -q '"result":"unavailable"'
+printf '%s\n' "$codex_bedrock_login_report" | grep -q '"result":"skipped"'
+printf '%s\n' "$codex_bedrock_login_report" | grep -q 'configured for Amazon Bedrock'
+if printf '%s\n' "$codex_bedrock_login_report" | grep -q '"service":"codex"'; then
+  printf 'Codex Bedrock login was incorrectly probed as an OpenAI route\n' >&2
+  exit 1
 fi
 
 mixed_client_quality=$(IPCHECK_TEST_ANTHROPIC_TTFB=4.000 run_ipcheck --samples 1 --no-bandwidth --json)
@@ -288,10 +392,119 @@ if printf '%s\n' "$auto_claude_override" | grep -q '"id":"codex"'; then
   exit 1
 fi
 
+disabled_provider_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_BEDROCK_BASE_URL -u ANTHROPIC_VERTEX_BASE_URL \
+  -u CLAUDE_CODE_USE_VERTEX -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS -u CODEX_API_KEY -u OPENAI_API_KEY \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  CLAUDE_CODE_USE_BEDROCK=0 PATH="$MINIMAL_BIN" HOME="$AUTO_HOME" \
+  CODEX_HOME="$AUTO_HOME/codex" CLAUDE_CONFIG_DIR="$AUTO_HOME/claude" \
+  HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" --samples 1 --no-bandwidth --json)
+printf '%s\n' "$disabled_provider_report" | grep -q '"id":"codex"'
+
+cat > "$AUTO_HOME/claude/settings.json" <<'EOF'
+{"CLAUDE_CODE_USE_BEDROCK": true}
+EOF
+set +e
+boolean_provider_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_BEDROCK_BASE_URL -u ANTHROPIC_VERTEX_BASE_URL \
+  -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_NETWORK_ENDPOINTS \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  PATH="$MINIMAL_BIN" HOME="$AUTO_HOME" CODEX_HOME="$AUTO_HOME/codex" CLAUDE_CONFIG_DIR="$AUTO_HOME/claude" \
+  HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" claude --samples 1 --no-bandwidth --json)
+boolean_provider_exit=$?
+set -e
+[ "$boolean_provider_exit" -eq 1 ]
+printf '%s\n' "$boolean_provider_report" | grep -q 'configured for Amazon Bedrock'
+printf '%s\n' '{}' > "$AUTO_HOME/claude/settings.json"
+
 claude_report=$(run_ipcheck claude --samples 1 --no-bandwidth --json)
 printf '%s\n' "$claude_report" | grep -q '"id":"claude"'
 if printf '%s\n' "$claude_report" | grep -q '"id":"codex"'; then
   printf 'Claude-only mode included Codex\n' >&2
+  exit 1
+fi
+
+set +e
+bedrock_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_VERTEX_BASE_URL \
+  -u CLAUDE_CODE_USE_VERTEX -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS -u CODEX_API_KEY -u OPENAI_API_KEY \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  CLAUDE_CODE_USE_BEDROCK=1 PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" \
+  CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
+  HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" claude --samples 1 --no-bandwidth --json)
+bedrock_exit=$?
+set -e
+[ "$bedrock_exit" -eq 1 ]
+printf '%s\n' "$bedrock_report" | grep -q 'configured for Amazon Bedrock'
+printf '%s\n' "$bedrock_report" | grep -q '"result":"unavailable"'
+printf '%s\n' "$bedrock_report" | grep -q '"result":"skipped"'
+
+set +e
+foundry_report=$(CLAUDE_CODE_USE_FOUNDRY=1 run_ipcheck claude --samples 1 --no-bandwidth --json)
+foundry_exit=$?
+set -e
+[ "$foundry_exit" -eq 1 ]
+printf '%s\n' "$foundry_report" | grep -q 'Microsoft Foundry (explicit endpoint required)'
+printf '%s\n' "$foundry_report" | grep -q 'provider-specific protocol'
+printf '%s\n' "$foundry_report" | grep -q '"result":"unavailable"'
+if printf '%s\n' "$foundry_report" | grep -q 'https://api.anthropic.com/v1/messages'; then
+  printf 'Provider-specific Foundry mode fell through to the Anthropic route\n' >&2
+  exit 1
+fi
+
+set +e
+bedrock_auto_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_BEDROCK_BASE_URL -u ANTHROPIC_VERTEX_BASE_URL \
+  -u CLAUDE_CODE_USE_VERTEX -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS -u CODEX_API_KEY -u OPENAI_API_KEY \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  CLAUDE_CODE_USE_BEDROCK=1 PATH="$MINIMAL_BIN" HOME="$AUTO_HOME" \
+  CODEX_HOME="$AUTO_HOME/codex" CLAUDE_CONFIG_DIR="$AUTO_HOME/claude" \
+  HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" --samples 1 --no-bandwidth --json)
+bedrock_auto_exit=$?
+set -e
+[ "$bedrock_auto_exit" -eq 1 ]
+printf '%s\n' "$bedrock_auto_report" | grep -q '"result":"unavailable"'
+printf '%s\n' "$bedrock_auto_report" | grep -q 'configured for Amazon Bedrock'
+
+set +e
+bedrock_base_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_VERTEX_BASE_URL \
+  -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS -u CODEX_API_KEY -u OPENAI_API_KEY \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  ANTHROPIC_BEDROCK_BASE_URL="https://bedrock.example.com" PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" \
+  CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
+  HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" claude --samples 1 --no-bandwidth --json)
+bedrock_base_exit=$?
+set -e
+[ "$bedrock_base_exit" -eq 1 ]
+printf '%s\n' "$bedrock_base_report" | grep -q '"result":"unavailable"'
+printf '%s\n' "$bedrock_base_report" | grep -q 'configured for Amazon Bedrock'
+if printf '%s\n' "$bedrock_base_report" | grep -q 'https://api.anthropic.com/v1/messages'; then
+  printf 'Provider-specific Bedrock base URL fell through to the Anthropic route\n' >&2
+  exit 1
+fi
+
+bedrock_all_report=$(env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u ANTHROPIC_VERTEX_BASE_URL \
+  -u CLAUDE_CODE_USE_VERTEX -u IPCHECK_SERVICES -u IPCHECK_ENDPOINTS \
+  -u CODEX_NETWORK_ENDPOINTS -u CLAUDE_NETWORK_ENDPOINTS -u CODEX_API_KEY -u OPENAI_API_KEY \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  CLAUDE_CODE_USE_BEDROCK=1 PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" \
+  CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
+  HTTPS_PROXY="http://127.0.0.1:1080" IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" all --samples 1 --no-bandwidth --json)
+printf '%s\n' "$bedrock_all_report" | grep -q 'automatic Anthropic protocol probing was skipped'
+if printf '%s\n' "$bedrock_all_report" | grep -q '"service":"claude"'; then
+  printf 'Bedrock configuration was incorrectly scored as an Anthropic route\n' >&2
   exit 1
 fi
 
@@ -302,6 +515,47 @@ env_precedence_report=$(ANTHROPIC_BASE_URL="https://gateway.example.com/anthropi
   "$PROJECT_DIR/bin/ipcheck" claude --samples 1 --no-bandwidth --json)
 printf '%s\n' "$env_precedence_report" | grep -q '"model":"gateway-model"'
 printf '%s\n' "$env_precedence_report" | grep -q 'https://gateway.example.com/anthropic/v1/messages'
+
+cat > "$CODEX_FIXTURE/config.toml" <<'EOF'
+model = "bedrock-model"
+model_provider = "amazon-bedrock"
+EOF
+set +e
+codex_bedrock_provider_report=$(run_ipcheck codex --samples 1 --no-bandwidth --json)
+codex_bedrock_provider_exit=$?
+set -e
+[ "$codex_bedrock_provider_exit" -eq 1 ]
+printf '%s\n' "$codex_bedrock_provider_report" | grep -q '"result":"unavailable"'
+printf '%s\n' "$codex_bedrock_provider_report" | grep -q '"model":"bedrock-model"'
+printf '%s\n' "$codex_bedrock_provider_report" | grep -q '"result":"skipped"'
+printf '%s\n' "$codex_bedrock_provider_report" | grep -q 'Set CODEX_NETWORK_ENDPOINTS'
+if printf '%s\n' "$codex_bedrock_provider_report" | grep -q 'Set CLAUDE_NETWORK_ENDPOINTS'; then
+  printf 'Codex Bedrock guidance referenced the Claude endpoint override\n' >&2
+  exit 1
+fi
+
+mixed_codex_bedrock_report=$(run_ipcheck all --samples 1 --no-bandwidth --json)
+printf '%s\n' "$mixed_codex_bedrock_report" | grep -q '"reachable_endpoints":1,"primary_success_rate_pct":100,"primary_ttfb_median_ms":100'
+mixed_codex_bedrock_zh=$(IPCHECK_LANG=zh run_ipcheck all --samples 1 --no-bandwidth --markdown)
+printf '%s\n' "$mixed_codex_bedrock_zh" | grep -q '1 条已跳过'
+
+cat > "$CODEX_FIXTURE/config.toml" <<'EOF'
+model = "chatgpt-proxy-model"
+chatgpt_base_url = "https://chatgpt-proxy.example.com/backend-api/"
+EOF
+chatgpt_base_report=$(run_ipcheck codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$chatgpt_base_report" | grep -q 'https://chatgpt-proxy.example.com/backend-api/codex/responses'
+
+cat > "$CODEX_FIXTURE/config.toml" <<'EOF'
+model = "chatgpt-proxy-model"
+chatgpt_base_url = "https://chatgpt-proxy.example.com/backend-api/codex/responses/"
+EOF
+chatgpt_full_route_report=$(run_ipcheck codex --samples 1 --no-bandwidth --json)
+printf '%s\n' "$chatgpt_full_route_report" | grep -q 'https://chatgpt-proxy.example.com/backend-api/codex/responses'
+if printf '%s\n' "$chatgpt_full_route_report" | grep -q 'responses/codex/responses'; then
+  printf 'Complete ChatGPT Codex route was appended twice\n' >&2
+  exit 1
+fi
 
 cat > "$CODEX_FIXTURE/config.toml" <<'EOF'
 model = 'proxy-model'
@@ -485,6 +739,21 @@ if printf '%s\n' "$proxy_redaction_report" | grep -Eq 'proxy-user|p@ss|proxy-sec
   exit 1
 fi
 
+proxy_eval_marker="$STUB_DIR/proxy-eval-must-not-run"
+malicious_proxy="\$(touch $proxy_eval_marker)"
+env \
+  -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u HTTPS_PROXY -u https_proxy \
+  -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy \
+  PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" \
+  CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" HTTPS_PROXY="$malicious_proxy" \
+  IPCHECK_TEST_CURL_LOG="$CURL_LOG" \
+  "$PROJECT_DIR/bin/ipcheck" --samples 1 --no-bandwidth \
+  --endpoint https://proxy-injection.invalid --json >/dev/null
+if [ -e "$proxy_eval_marker" ]; then
+  printf 'proxy environment value was executed as shell code\n' >&2
+  exit 1
+fi
+
 : > "$CURL_LOG"
 proxy_fallback_report=$(env \
   -u ANTHROPIC_BASE_URL -u ANTHROPIC_MODEL -u HTTPS_PROXY -u https_proxy -u ALL_PROXY -u all_proxy \
@@ -497,7 +766,7 @@ grep -q '^http://127.0.0.1:1082$' "$CURL_LOG"
 
 : > "$CURL_LOG"
 claude_system_proxy_report=$(run_ipcheck_direct claude --samples 1 --no-bandwidth --json)
-printf '%s\n' "$claude_system_proxy_report" | grep -q 'Claude Code expects HTTPS_PROXY/HTTP_PROXY'
+printf '%s\n' "$claude_system_proxy_report" | grep -q 'the probe does not apply the macOS proxy explicitly'
 if grep -q '^--proxy$' "$CURL_LOG"; then
   printf 'Claude probe incorrectly used the macOS system proxy\n' >&2
   exit 1
@@ -527,11 +796,14 @@ claude_https_precedence_report=$(env \
   -u ANTHROPIC_MODEL -u HTTP_PROXY -u http_proxy -u https_proxy \
   ANTHROPIC_BASE_URL="http://claude-http-gateway.invalid/anthropic" \
   HTTPS_PROXY="http://supported-proxy.invalid:8080" ALL_PROXY="http://unsupported-proxy.invalid:8081" \
+  NO_PROXY="claude-http-gateway.invalid" no_proxy="claude-http-gateway.invalid" \
   PATH="$STUB_DIR:$PATH" HOME="$FIXTURE_HOME" CODEX_HOME="$CODEX_FIXTURE" CLAUDE_CONFIG_DIR="$CLAUDE_FIXTURE" \
   IPCHECK_TEST_CURL_LOG="$CURL_LOG" "$PROJECT_DIR/bin/ipcheck" claude --samples 1 --no-bandwidth --json)
 printf '%s\n' "$claude_https_precedence_report" | grep -q '"result":"good"'
 grep -q '^env:HTTPS_PROXY=http://supported-proxy.invalid:8080$' "$CURL_LOG"
 grep -q '^env:ALL_PROXY=$' "$CURL_LOG"
+grep -q '^env:NO_PROXY=claude-http-gateway.invalid$' "$CURL_LOG"
+grep -q '^env:no_proxy=claude-http-gateway.invalid$' "$CURL_LOG"
 
 : > "$CURL_LOG"
 socks_report=$(env \

@@ -11,7 +11,8 @@
 
 `ipcheck` 是一个零依赖 Bash CLI，检测 AI 编程客户端实际使用的服务路径，
 提供可达性、TTFB 中位数/P95、抖动、参考上下行速度和直白的开发适配分。
-它不会读取 API Key、发送 Prompt，也不会产生模型调用费用。
+无需登录 Codex 或 Claude；它不会读取 API Key、发送 Prompt，也不会产生
+模型调用费用。
 
 ![ipcheck 健康网络与受限网络动态演示](assets/ipcheck-demo-zh.gif)
 
@@ -33,7 +34,7 @@ brew upgrade ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.1/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.2/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -66,9 +67,14 @@ chmod +x "$HOME/.local/bin/ipcheck"
 
 | 客户端 | 自动识别的配置 | 检测路径 |
 | --- | --- | --- |
-| Codex | `$CODEX_HOME/config.toml`、`model`、`openai_base_url`、自定义 provider | ChatGPT/OpenAI 默认路径或 `/v1/responses` |
+| Codex | `$CODEX_HOME/config.toml`、登录方式、`model`、`openai_base_url`、自定义 provider | 尽可能按登录方式选择 ChatGPT Codex 或 OpenAI `/responses` |
 | Claude Code | `settings.json`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` | `${ANTHROPIC_BASE_URL}/v1/messages` |
 | 自定义 | `--endpoint`、`IPCHECK_ENDPOINTS` | 用户指定的 HTTP/HTTPS 地址 |
+
+OpenAI/ChatGPT、Anthropic 直连与兼容网关会自动探测。provider 原生路径需要
+明确提供无凭据检测地址：Codex on Bedrock 使用 `CODEX_NETWORK_ENDPOINTS`；
+Claude Code 的 Bedrock、Vertex AI、Foundry、Mantle 等 provider 原生协议使用
+`CLAUDE_NETWORK_ENDPOINTS`。`ipcheck` 会给出警告，而不是静默检测错误的 provider。
 
 ## 常用命令
 
@@ -94,9 +100,13 @@ chmod +x "$HOME/.local/bin/ipcheck"
 | `FAIR` | 可以使用，但有延迟、波动、限流或临时服务异常 |
 | `POOR` | 非常慢、不稳定、多数不可用，或 API 路径配置错误 |
 | `BLOCKED` | 没有服务响应，或请求先被代理拒绝 |
+| `UNAVAILABLE` | provider 专用路径因缺少明确的安全检测地址而未被测量 |
 
 HTTP `401` 和 `403` 代表链路可达，因为 DNS、代理、TLS 和 HTTP 已经到达
 API 路径；HTTP `407` 表示请求被代理拦截。
+
+TTFB 来自无凭据协议请求，反映 DNS、代理、TLS、网络与网关入口耗时；它不
+包含认证后的模型生成时间，也不是模型首个 Token 的到达时间。
 
 0–100 分是透明的规则评分，不代表用户百分位，并且服务可达性和交互延迟
 比峰值带宽更重要。精确计算方式见[评分与结论规则](docs/scoring.zh-CN.md)。
