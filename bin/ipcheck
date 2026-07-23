@@ -10,8 +10,8 @@ unset LC_ALL
 LC_NUMERIC=C
 export LC_NUMERIC
 
-VERSION="0.8.1"
-SCHEMA_VERSION=1
+VERSION="0.8.2"
+SCHEMA_VERSION=2
 SAMPLES=3
 TIMEOUT=15
 SERVICE_MODE="auto"
@@ -81,6 +81,13 @@ is_integer() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
     *) return 0 ;;
+  esac
+}
+
+is_truthy() {
+  case "$1" in
+    1|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -316,9 +323,13 @@ localized_reason() {
     "The API route is reachable, but at least one sample was rate limited (HTTP 429).") printf 'API 路由可以访问，但至少一次测试触发了限流（HTTP 429）。' ;;
     "The API route is reachable, but at least one sample returned a server error.") printf 'API 路由可以访问，但至少一次测试返回服务器错误。' ;;
     "The service path is reachable, but one or more sampled requests failed.") printf '服务链路可以访问，但一次或多次测试请求失败。' ;;
-    "The service path is reachable with acceptable first-byte latency and jitter.") printf '服务链路正常，首字节延迟和抖动都在适合开发的范围内。' ;;
-    "The service path is usable, but interactive responses may feel delayed.") printf '服务链路可用，但交互响应可能会感觉偏慢。' ;;
-    "The service path is reachable but has high latency or unstable responses.") printf '服务链路可以访问，但延迟较高或响应不稳定。' ;;
+    "The protocol path is reachable with low probe TTFB and stable samples.") printf '协议链路可以访问，探测首字节延迟较低且样本稳定。' ;;
+    "The protocol path is usable, but network or gateway ingress may add noticeable delay.") printf '协议链路可以使用，但网络或网关入口可能带来明显等待。' ;;
+    "The protocol path is reachable but has high probe latency or unstable samples.") printf '协议链路可以访问，但探测延迟较高或样本不稳定。' ;;
+    "Codex is configured for Amazon Bedrock; automatic OpenAI protocol probing was skipped. Set CODEX_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Codex 已配置 Amazon Bedrock；已跳过 OpenAI 协议自动探测。请设置 CODEX_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
+    "Claude Code is configured for Amazon Bedrock; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Claude Code 已配置 Amazon Bedrock；已跳过 Anthropic 协议自动探测。请设置 CLAUDE_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
+    "Claude Code is configured for Google Vertex AI; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Claude Code 已配置 Google Vertex AI；已跳过 Anthropic 协议自动探测。请设置 CLAUDE_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
+    "Claude Code is configured for a provider-specific protocol; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Claude Code 已配置 provider 专用协议；已跳过 Anthropic 协议自动探测。请设置 CLAUDE_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -331,7 +342,11 @@ localized_warning() {
   case "$1" in
     "Claude Code does not support SOCKS proxies; configure an HTTP/HTTPS proxy or gateway.") printf 'Claude Code 不支持 SOCKS 代理；请配置 HTTP/HTTPS 代理或网关。' ;;
     "Claude Code does not document ALL_PROXY; Claude probes ignore it unless HTTPS_PROXY or HTTP_PROXY is also configured.") printf 'Claude Code 未声明支持 ALL_PROXY；除非同时配置 HTTPS_PROXY 或 HTTP_PROXY，否则 Claude 测试会忽略它。' ;;
-    "A macOS system proxy is configured, but Claude Code expects HTTPS_PROXY/HTTP_PROXY; Claude probes use the direct path.") printf 'macOS 已配置系统代理，但 Claude Code 需要 HTTPS_PROXY/HTTP_PROXY；当前 Claude 测试使用直连链路。' ;;
+    "A macOS HTTP proxy is configured, but Claude Code documents HTTPS_PROXY/HTTP_PROXY; the probe does not apply the macOS proxy explicitly, while OS/VPN routing may still carry the traffic.") printf 'macOS 已配置 HTTP 代理，但 Claude Code 官方声明使用 HTTPS_PROXY/HTTP_PROXY；当前探测不会显式应用 macOS 代理，但系统或 VPN/TUN 路由仍可能承载流量。' ;;
+    "Codex is configured for Amazon Bedrock; automatic OpenAI protocol probing was skipped. Set CODEX_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Codex 已配置 Amazon Bedrock；已跳过 OpenAI 协议自动探测。请设置 CODEX_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
+    "Claude Code is configured for Amazon Bedrock; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Claude Code 已配置 Amazon Bedrock；已跳过 Anthropic 协议自动探测。请设置 CLAUDE_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
+    "Claude Code is configured for Google Vertex AI; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Claude Code 已配置 Google Vertex AI；已跳过 Anthropic 协议自动探测。请设置 CLAUDE_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
+    "Claude Code is configured for a provider-specific protocol; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly.") printf 'Claude Code 已配置 provider 专用协议；已跳过 Anthropic 协议自动探测。请设置 CLAUDE_NETWORK_ENDPOINTS 明确指定要测试的服务路径。' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -411,6 +426,7 @@ INDEXED_PROBES_FILE="$WORK_DIR/indexed-probes.tsv"
 ENDPOINT_SUMMARY_FILE="$WORK_DIR/endpoint-summary.tsv"
 ENDPOINT_JSON_FILE="$WORK_DIR/endpoints.jsonl"
 SERVICE_RESULT_FILE="$WORK_DIR/service-results.tsv"
+SKIPPED_SERVICES_FILE="$WORK_DIR/skipped-services.tsv"
 WARNINGS_FILE="$WORK_DIR/warnings.txt"
 : > "$SERVICES_FILE"
 : > "$PROBES_FILE"
@@ -418,6 +434,7 @@ WARNINGS_FILE="$WORK_DIR/warnings.txt"
 : > "$ENDPOINT_SUMMARY_FILE"
 : > "$ENDPOINT_JSON_FILE"
 : > "$SERVICE_RESULT_FILE"
+: > "$SKIPPED_SERVICES_FILE"
 : > "$WARNINGS_FILE"
 
 json_escape() {
@@ -511,7 +528,10 @@ json_setting() {
   file="$1"
   key="$2"
   [ -f "$file" ] || return 0
-  sed -n -E 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$file" | head -n 1
+  sed -n -E \
+    -e 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' \
+    -e 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*(true|false|TRUE|FALSE|1|0).*/\1/p' \
+    "$file" | head -n 1
 }
 
 append_path() {
@@ -521,6 +541,28 @@ append_path() {
   case "$base" in
     */v1) printf '%s/%s' "$base" "$path" ;;
     *) printf '%s/v1/%s' "$base" "$path" ;;
+  esac
+}
+
+append_route() {
+  local base route
+  base=$(printf '%s' "$1" | sed 's#/*$##')
+  route="$2"
+  case "$base" in
+    */"$route") printf '%s' "$base" ;;
+    *) printf '%s/%s' "$base" "$route" ;;
+  esac
+}
+
+proxy_env_value() {
+  case "$1" in
+    HTTPS_PROXY) printf '%s' "${HTTPS_PROXY-}" ;;
+    https_proxy) printf '%s' "${https_proxy-}" ;;
+    HTTP_PROXY) printf '%s' "${HTTP_PROXY-}" ;;
+    http_proxy) printf '%s' "${http_proxy-}" ;;
+    ALL_PROXY) printf '%s' "${ALL_PROXY-}" ;;
+    all_proxy) printf '%s' "${all_proxy-}" ;;
+    *) return 1 ;;
   esac
 }
 
@@ -596,7 +638,12 @@ if [ "$SERVICE_MODE" = "auto" ]; then
   [ -n "${CODEX_NETWORK_ENDPOINTS-}" ] && codex_detected=1
   command -v claude >/dev/null 2>&1 && claude_detected=1
   [ -f "$CLAUDE_SETTINGS" ] && claude_detected=1
-  [ -n "${ANTHROPIC_BASE_URL-}${ANTHROPIC_MODEL-}" ] && claude_detected=1
+  [ -n "${ANTHROPIC_BASE_URL-}${ANTHROPIC_MODEL-}${ANTHROPIC_BEDROCK_BASE_URL-}${ANTHROPIC_VERTEX_BASE_URL-}${ANTHROPIC_FOUNDRY_BASE_URL-}${ANTHROPIC_AWS_BASE_URL-}${ANTHROPIC_GOOGLE_CLOUD_BASE_URL-}${ANTHROPIC_BEDROCK_MANTLE_BASE_URL-}" ] && claude_detected=1
+  if is_truthy "${CLAUDE_CODE_USE_BEDROCK-}" || is_truthy "${CLAUDE_CODE_USE_VERTEX-}" || \
+     is_truthy "${CLAUDE_CODE_USE_FOUNDRY-}" || is_truthy "${CLAUDE_CODE_USE_ANTHROPIC_AWS-}" || \
+     is_truthy "${CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD-}" || is_truthy "${CLAUDE_CODE_USE_MANTLE-}"; then
+    claude_detected=1
+  fi
   [ -n "${CLAUDE_NETWORK_ENDPOINTS-}" ] && claude_detected=1
   if [ "$codex_detected" -eq 1 ] && [ "$claude_detected" -eq 1 ]; then
     SERVICE_MODE="all"
@@ -637,52 +684,172 @@ else
       codex_source="config.toml openai_base_url"
     fi
 
+    codex_api_key_present=0
+    if [ "${CODEX_API_KEY+x}" = x ] && [ "${#CODEX_API_KEY}" -gt 0 ]; then
+      codex_api_key_present=1
+    elif [ "${OPENAI_API_KEY+x}" = x ] && [ "${#OPENAI_API_KEY}" -gt 0 ]; then
+      codex_api_key_present=1
+    fi
+    codex_login_status=""
+    if [ "$codex_api_key_present" -eq 0 ] && command -v codex >/dev/null 2>&1; then
+      # Login status only needs Codex's stored configuration. Keep ambient
+      # bearer/API credentials out of the child process used for detection.
+      codex_login_status=$(env \
+        -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_ACCESS_TOKEN \
+        -u AWS_BEARER_TOKEN_BEDROCK \
+        codex login status 2>&1 || true)
+    fi
+    codex_auth_mode="unknown"
+    if [ "$codex_api_key_present" -eq 1 ]; then
+      codex_auth_mode="api_key"
+    else
+      case "$codex_login_status" in
+        *"Amazon Bedrock"*|*"amazon bedrock"*) codex_auth_mode="bedrock" ;;
+        *[Cc]hatGPT*) codex_auth_mode="chatgpt" ;;
+        *"API key"*|*"api key"*) codex_auth_mode="api_key" ;;
+      esac
+    fi
+    codex_special_provider=""
+    case "$codex_provider" in
+      amazon-bedrock|aws) codex_special_provider="bedrock" ;;
+    esac
+    if [ -z "$codex_base" ] && [ "$codex_auth_mode" = "bedrock" ]; then
+      codex_special_provider="bedrock"
+    fi
+
     if [ -n "${CODEX_NETWORK_ENDPOINTS-}" ]; then
       add_service "codex" "Codex" "$codex_model" "custom endpoints" "CODEX_NETWORK_ENDPOINTS"
       add_endpoint_list "codex" "$CODEX_NETWORK_ENDPOINTS" "Codex endpoint"
+    elif [ "$codex_special_provider" = "bedrock" ]; then
+      codex_provider_warning="Codex is configured for Amazon Bedrock; automatic OpenAI protocol probing was skipped. Set CODEX_NETWORK_ENDPOINTS to test the provider route explicitly."
+      add_service "codex" "Codex" "$codex_model" "Amazon Bedrock (explicit endpoint required)" "provider configuration"
+      printf '%s\t%s\n' "codex" "$codex_provider_warning" >> "$SKIPPED_SERVICES_FILE"
+      printf '%s\n' "$codex_provider_warning" >> "$WARNINGS_FILE"
     elif [ -n "$codex_base" ]; then
       add_service "codex" "Codex" "$codex_model" "$codex_base" "$codex_source"
       add_probe "codex" "Codex Responses API" "$(append_path "$codex_base" "responses")" "openai" "primary"
     else
-      add_service "codex" "Codex" "$codex_model" "https://chatgpt.com + https://api.openai.com" "$codex_source"
-      add_probe "codex" "ChatGPT" "https://chatgpt.com/" "head" "primary"
-      add_probe "codex" "OpenAI API" "https://api.openai.com/v1/models" "head" "secondary"
+      codex_chatgpt_base=$(toml_top_string "$CODEX_CONFIG" "chatgpt_base_url")
+      [ -n "$codex_chatgpt_base" ] || codex_chatgpt_base="https://chatgpt.com/backend-api"
+      codex_chatgpt_base=$(printf '%s' "$codex_chatgpt_base" | sed 's#/*$##')
+      case "$codex_chatgpt_base" in
+        */codex/responses) codex_chatgpt_responses="$codex_chatgpt_base" ;;
+        */codex) codex_chatgpt_responses=$(append_route "$codex_chatgpt_base" "responses") ;;
+        *)
+          codex_chatgpt_api=$(append_route "$codex_chatgpt_base" "codex")
+          codex_chatgpt_responses=$(append_route "$codex_chatgpt_api" "responses")
+          ;;
+      esac
+      codex_openai_responses="https://api.openai.com/v1/responses"
+      if [ "$codex_auth_mode" = "api_key" ]; then
+        codex_source="Codex API key login"
+        add_service "codex" "Codex" "$codex_model" "$codex_openai_responses + $codex_chatgpt_responses" "$codex_source"
+        add_probe "codex" "OpenAI Responses API" "$codex_openai_responses" "openai" "primary"
+        add_probe "codex" "ChatGPT Codex API" "$codex_chatgpt_responses" "openai" "secondary"
+      else
+        [ "$codex_auth_mode" != "chatgpt" ] || codex_source="Codex ChatGPT login"
+        add_service "codex" "Codex" "$codex_model" "$codex_chatgpt_responses + $codex_openai_responses" "$codex_source"
+        add_probe "codex" "ChatGPT Codex API" "$codex_chatgpt_responses" "openai" "primary"
+        add_probe "codex" "OpenAI Responses API" "$codex_openai_responses" "openai" "secondary"
+      fi
     fi
   fi
 
   if [ "$SERVICE_MODE" = "claude" ] || [ "$SERVICE_MODE" = "all" ]; then
-    claude_base="${ANTHROPIC_BASE_URL-}"
-    claude_model="${ANTHROPIC_MODEL-}"
-    claude_source="environment"
-    if [ -z "$claude_base" ]; then
-      claude_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_BASE_URL")
-      claude_source="$CLAUDE_SETTINGS_SOURCE"
-    fi
-    if [ -z "$claude_model" ]; then
-      claude_model=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_MODEL")
-    fi
-    if [ -z "$claude_base" ]; then
-      claude_base="https://api.anthropic.com"
-      claude_source="Claude Code default"
-    fi
-    [ -n "$claude_model" ] || claude_model="default"
+    claude_use_bedrock="${CLAUDE_CODE_USE_BEDROCK-}"
+    claude_use_vertex="${CLAUDE_CODE_USE_VERTEX-}"
+    claude_use_foundry="${CLAUDE_CODE_USE_FOUNDRY-}"
+    claude_use_anthropic_aws="${CLAUDE_CODE_USE_ANTHROPIC_AWS-}"
+    claude_use_anthropic_google="${CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD-}"
+    claude_use_mantle="${CLAUDE_CODE_USE_MANTLE-}"
+    claude_bedrock_base="${ANTHROPIC_BEDROCK_BASE_URL-}"
+    claude_vertex_base="${ANTHROPIC_VERTEX_BASE_URL-}"
+    claude_foundry_base="${ANTHROPIC_FOUNDRY_BASE_URL-}"
+    claude_anthropic_aws_base="${ANTHROPIC_AWS_BASE_URL-}"
+    claude_anthropic_google_base="${ANTHROPIC_GOOGLE_CLOUD_BASE_URL-}"
+    claude_mantle_base="${ANTHROPIC_BEDROCK_MANTLE_BASE_URL-}"
+    [ -n "$claude_use_bedrock" ] || claude_use_bedrock=$(json_setting "$CLAUDE_SETTINGS" "CLAUDE_CODE_USE_BEDROCK")
+    [ -n "$claude_use_vertex" ] || claude_use_vertex=$(json_setting "$CLAUDE_SETTINGS" "CLAUDE_CODE_USE_VERTEX")
+    [ -n "$claude_use_foundry" ] || claude_use_foundry=$(json_setting "$CLAUDE_SETTINGS" "CLAUDE_CODE_USE_FOUNDRY")
+    [ -n "$claude_use_anthropic_aws" ] || claude_use_anthropic_aws=$(json_setting "$CLAUDE_SETTINGS" "CLAUDE_CODE_USE_ANTHROPIC_AWS")
+    [ -n "$claude_use_anthropic_google" ] || claude_use_anthropic_google=$(json_setting "$CLAUDE_SETTINGS" "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD")
+    [ -n "$claude_use_mantle" ] || claude_use_mantle=$(json_setting "$CLAUDE_SETTINGS" "CLAUDE_CODE_USE_MANTLE")
+    [ -n "$claude_bedrock_base" ] || claude_bedrock_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_BEDROCK_BASE_URL")
+    [ -n "$claude_vertex_base" ] || claude_vertex_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_VERTEX_BASE_URL")
+    [ -n "$claude_foundry_base" ] || claude_foundry_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_FOUNDRY_BASE_URL")
+    [ -n "$claude_anthropic_aws_base" ] || claude_anthropic_aws_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_AWS_BASE_URL")
+    [ -n "$claude_anthropic_google_base" ] || claude_anthropic_google_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_GOOGLE_CLOUD_BASE_URL")
+    [ -n "$claude_mantle_base" ] || claude_mantle_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_BEDROCK_MANTLE_BASE_URL")
+    claude_special_provider=""
+    is_truthy "$claude_use_bedrock" && claude_special_provider="bedrock"
+    is_truthy "$claude_use_vertex" && claude_special_provider="vertex"
+    is_truthy "$claude_use_foundry" && claude_special_provider="Microsoft Foundry"
+    is_truthy "$claude_use_anthropic_aws" && claude_special_provider="Anthropic on AWS"
+    is_truthy "$claude_use_anthropic_google" && claude_special_provider="Anthropic on Google Cloud"
+    is_truthy "$claude_use_mantle" && claude_special_provider="Amazon Bedrock Mantle"
+    [ -z "$claude_bedrock_base" ] || claude_special_provider="bedrock"
+    [ -z "$claude_vertex_base" ] || claude_special_provider="vertex"
+    [ -z "$claude_foundry_base" ] || claude_special_provider="Microsoft Foundry"
+    [ -z "$claude_anthropic_aws_base" ] || claude_special_provider="Anthropic on AWS"
+    [ -z "$claude_anthropic_google_base" ] || claude_special_provider="Anthropic on Google Cloud"
+    [ -z "$claude_mantle_base" ] || claude_special_provider="Amazon Bedrock Mantle"
 
-    if [ -n "${CLAUDE_NETWORK_ENDPOINTS-}" ]; then
-      add_service "claude" "Claude Code" "$claude_model" "custom endpoints" "CLAUDE_NETWORK_ENDPOINTS"
-      add_endpoint_list "claude" "$CLAUDE_NETWORK_ENDPOINTS" "Claude endpoint"
+    if [ -n "$claude_special_provider" ] && [ -z "${CLAUDE_NETWORK_ENDPOINTS-}" ]; then
+      if [ "$claude_special_provider" = "bedrock" ]; then
+        claude_provider_warning="Claude Code is configured for Amazon Bedrock; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly."
+        claude_provider_route="Amazon Bedrock (explicit endpoint required)"
+      elif [ "$claude_special_provider" = "vertex" ]; then
+        claude_provider_warning="Claude Code is configured for Google Vertex AI; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly."
+        claude_provider_route="Google Vertex AI (explicit endpoint required)"
+      else
+        claude_provider_warning="Claude Code is configured for a provider-specific protocol; automatic Anthropic protocol probing was skipped. Set CLAUDE_NETWORK_ENDPOINTS to test the provider route explicitly."
+        claude_provider_route="$claude_special_provider (explicit endpoint required)"
+      fi
+      claude_model="${ANTHROPIC_MODEL-}"
+      [ -n "$claude_model" ] || claude_model=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_MODEL")
+      [ -n "$claude_model" ] || claude_model="default"
+      add_service "claude" "Claude Code" "$claude_model" "$claude_provider_route" "provider configuration"
+      printf '%s\t%s\n' "claude" "$claude_provider_warning" >> "$SKIPPED_SERVICES_FILE"
+      printf '%s\n' "$claude_provider_warning" >> "$WARNINGS_FILE"
+      continue_claude_probe=0
     else
-      add_service "claude" "Claude Code" "$claude_model" "$claude_base" "$claude_source"
-      add_probe "claude" "Claude Messages API" "$(append_path "$claude_base" "messages")" "anthropic" "primary"
-      if [ "$claude_base" = "https://api.anthropic.com" ]; then
-        add_probe "claude" "Claude account auth" "https://claude.ai/" "head" "secondary"
-        add_probe "claude" "Claude Console auth" "https://platform.claude.com/" "head" "secondary"
+      continue_claude_probe=1
+    fi
+
+    if [ "$continue_claude_probe" -eq 1 ]; then
+      claude_base="${ANTHROPIC_BASE_URL-}"
+      claude_model="${ANTHROPIC_MODEL-}"
+      claude_source="environment"
+      if [ -z "$claude_base" ]; then
+        claude_base=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_BASE_URL")
+        claude_source="$CLAUDE_SETTINGS_SOURCE"
+      fi
+      if [ -z "$claude_model" ]; then
+        claude_model=$(json_setting "$CLAUDE_SETTINGS" "ANTHROPIC_MODEL")
+      fi
+      if [ -z "$claude_base" ]; then
+        claude_base="https://api.anthropic.com"
+        claude_source="Claude Code default"
+      fi
+      [ -n "$claude_model" ] || claude_model="default"
+
+      if [ -n "${CLAUDE_NETWORK_ENDPOINTS-}" ]; then
+        add_service "claude" "Claude Code" "$claude_model" "custom endpoints" "CLAUDE_NETWORK_ENDPOINTS"
+        add_endpoint_list "claude" "$CLAUDE_NETWORK_ENDPOINTS" "Claude endpoint"
+      else
+        add_service "claude" "Claude Code" "$claude_model" "$claude_base" "$claude_source"
+        add_probe "claude" "Claude Messages API" "$(append_path "$claude_base" "messages")" "anthropic" "primary"
+        if [ "$claude_base" = "https://api.anthropic.com" ]; then
+          add_probe "claude" "Claude account auth" "https://claude.ai/" "head" "secondary"
+          add_probe "claude" "Claude Console auth" "https://platform.claude.com/" "head" "secondary"
+        fi
       fi
     fi
   fi
 fi
 
 [ -s "$SERVICES_FILE" ] || die "no services selected"
-[ -s "$PROBES_FILE" ] || die "no endpoints configured"
+[ -s "$PROBES_FILE" ] || [ -s "$SKIPPED_SERVICES_FILE" ] || die "no endpoints configured"
 
 # curl does not automatically use macOS System Settings proxies. For Codex and
 # custom probes, fall back to the configured system HTTPS proxy when no proxy
@@ -703,7 +870,7 @@ any_proxy_env_found=0
 claude_http_proxy=""
 proxy_scheme=""
 for proxy_name in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy; do
-  eval "proxy_value=\${$proxy_name-}"
+  proxy_value=$(proxy_env_value "$proxy_name")
   if [ -n "$proxy_value" ]; then
     any_proxy_env_found=1
     case "$proxy_name" in
@@ -730,7 +897,7 @@ if awk -F '\t' '$1 == "claude" { found=1 } END { exit !found }' "$SERVICES_FILE"
     printf '%s\n' "Claude Code does not document ALL_PROXY; Claude probes ignore it unless HTTPS_PROXY or HTTP_PROXY is also configured." >> "$WARNINGS_FILE"
   fi
   if [ -n "$system_curl_proxy" ] && [ "$any_proxy_env_found" -eq 0 ]; then
-    printf '%s\n' "A macOS system proxy is configured, but Claude Code expects HTTPS_PROXY/HTTP_PROXY; Claude probes use the direct path." >> "$WARNINGS_FILE"
+    printf '%s\n' "A macOS HTTP proxy is configured, but Claude Code documents HTTPS_PROXY/HTTP_PROXY; the probe does not apply the macOS proxy explicitly, while OS/VPN routing may still carry the traffic." >> "$WARNINGS_FILE"
   fi
 fi
 
@@ -742,7 +909,7 @@ proxy_summary() {
   local name value found route_interface
   found=0
   for name in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy; do
-    eval "value=\${$name-}"
+    value=$(proxy_env_value "$name")
     if [ -n "$value" ]; then
       [ "$found" -eq 0 ] || printf ', '
       printf '%s=%s' "$name" "$(redact_proxy "$value")"
@@ -952,7 +1119,7 @@ EOF
   fi
 done < "$PROBES_FILE"
 
-[ "$endpoint_count" -gt 0 ] || die "no endpoints configured"
+[ "$endpoint_count" -gt 0 ] || [ -s "$SKIPPED_SERVICES_FILE" ] || die "no endpoints configured"
 
 bandwidth_speed=0
 bandwidth_code=000
@@ -1189,11 +1356,20 @@ good_services=0
 fair_services=0
 poor_services=0
 blocked_services=0
+skipped_services=0
+measured_service_seen=0
 overall_rank=0
 while IFS="$TAB" read -r service display model base source; do
   service_count=$((service_count + 1))
+  skipped_reason=$(awk -F '\t' -v service="$service" '$1 == service { print $2; exit }' "$SKIPPED_SERVICES_FILE")
+  if [ -n "$skipped_reason" ]; then
+    skipped_services=$((skipped_services + 1))
+    printf '%s\t%s\t%s\t0\t0\t0\t0\n' "$service" "skipped" "$skipped_reason" >> "$SERVICE_RESULT_FILE"
+    continue
+  fi
   primary_index=$(awk -F '\t' -v service="$service" '$2 == service && $5 == "primary" { print $1; exit }' "$ENDPOINT_SUMMARY_FILE")
   [ -n "$primary_index" ] || continue
+  measured_service_seen=$((measured_service_seen + 1))
   primary_sample_file="$WORK_DIR/endpoint_${primary_index}.tsv"
   service_ok=$(awk '$1 == 0 && $2 != "000" && $2 != "407" { count++ } END { print count + 0 }' "$primary_sample_file")
   service_usable=$(awk '$1 == 0 && $2 != "000" && $2 != "407" && $2 != "404" && $2 != "429" && $2 !~ /^5[0-9][0-9]$/ { count++ } END { print count + 0 }' "$primary_sample_file")
@@ -1235,15 +1411,15 @@ while IFS="$TAB" read -r service display model base source; do
       service_rank=1
     elif awk -v ttfb="$service_ttfb" -v jitter="$service_jitter" 'BEGIN { exit !(ttfb > 0 && ttfb < 800 && jitter < 1000) }'; then
       service_result="good"
-      service_reason="The service path is reachable with acceptable first-byte latency and jitter."
+      service_reason="The protocol path is reachable with low probe TTFB and stable samples."
       service_rank=0
     elif awk -v ttfb="$service_ttfb" 'BEGIN { exit !(ttfb > 0 && ttfb < 3000) }'; then
       service_result="fair"
-      service_reason="The service path is usable, but interactive responses may feel delayed."
+      service_reason="The protocol path is usable, but network or gateway ingress may add noticeable delay."
       service_rank=1
     else
       service_result="poor"
-      service_reason="The service path is reachable but has high latency or unstable responses."
+      service_reason="The protocol path is reachable but has high probe latency or unstable samples."
       service_rank=2
     fi
   fi
@@ -1254,7 +1430,7 @@ while IFS="$TAB" read -r service display model base source; do
     blocked) blocked_services=$((blocked_services + 1)) ;;
   esac
   [ "$service_rank" -gt "$overall_rank" ] && overall_rank="$service_rank"
-  if [ "$service_count" -eq 1 ]; then
+  if [ "$measured_service_seen" -eq 1 ]; then
     primary_ttfb="$service_ttfb"
     primary_jitter="$service_jitter"
     primary_success_rate="$service_rate"
@@ -1263,7 +1439,10 @@ while IFS="$TAB" read -r service display model base source; do
     "$service" "$service_result" "$service_reason" "$service_rate" "$service_ttfb" "$service_jitter" "$service_usable" >> "$SERVICE_RESULT_FILE"
 done < "$SERVICES_FILE"
 
-if [ "$blocked_services" -eq "$service_count" ]; then
+measured_service_count=$((service_count - skipped_services))
+if [ "$measured_service_count" -eq 0 ]; then
+  overall="unavailable"
+elif [ "$blocked_services" -eq "$measured_service_count" ]; then
   overall="blocked"
 elif [ "$blocked_services" -gt 0 ]; then
   overall="poor"
@@ -1277,7 +1456,7 @@ fi
 if [ "$service_count" -eq 1 ]; then
   overall_reason=$(awk -F '\t' 'NR == 1 { print $3 }' "$SERVICE_RESULT_FILE")
 else
-  overall_reason="$good_services good, $fair_services fair, $poor_services poor, $blocked_services blocked service path(s)."
+  overall_reason="$good_services good, $fair_services fair, $poor_services poor, $blocked_services blocked, $skipped_services skipped service path(s)."
 fi
 
 case "$overall" in
@@ -1296,10 +1475,10 @@ case "$overall" in
       readiness_ready=true
       readiness_level="with_caution"
       readiness_answer_en="YES, WITH CAUTION"
-      readiness_summary_en="Development is possible, but responses may feel slower than ideal."
+      readiness_summary_en="Development is possible, but the measured network or gateway path may add delay."
       readiness_recommendation_en="You can keep working. If pauses become distracting, try a lower-latency proxy route."
       readiness_answer_zh="可以，但会有些慢"
-      readiness_summary_zh="当前可以开发，但响应速度可能不够理想。"
+      readiness_summary_zh="当前可以开发，但测得的网络或网关链路可能带来额外等待。"
       readiness_recommendation_zh="可以继续工作；如果等待明显影响节奏，建议切换到延迟更低的代理节点。"
     else
       readiness_ready=false
@@ -1321,6 +1500,28 @@ case "$overall" in
     readiness_answer_zh="暂不适合"
     readiness_summary_zh="当前网络很可能影响 AI 辅助开发的连续性。"
     readiness_recommendation_zh="建议先切换代理节点，或排查高延迟和请求失败，再开始较长时间的开发。"
+    ;;
+  unavailable)
+    readiness_ready=false
+    readiness_level="unavailable"
+    readiness_answer_en="UNKNOWN"
+    readiness_summary_en="The configured provider route was not measured automatically."
+    skipped_codex=0
+    skipped_claude=0
+    awk -F '\t' '$1 == "codex" { found=1 } END { exit !found }' "$SKIPPED_SERVICES_FILE" && skipped_codex=1
+    awk -F '\t' '$1 == "claude" { found=1 } END { exit !found }' "$SKIPPED_SERVICES_FILE" && skipped_claude=1
+    if [ "$skipped_codex" -eq 1 ] && [ "$skipped_claude" -eq 1 ]; then
+      readiness_recommendation_en="Set CODEX_NETWORK_ENDPOINTS and CLAUDE_NETWORK_ENDPOINTS to credential-free provider URLs, then run ipcheck again."
+      readiness_recommendation_zh="请将无需凭据即可探测的 provider URL 分别设置到 CODEX_NETWORK_ENDPOINTS 与 CLAUDE_NETWORK_ENDPOINTS 后重新运行。"
+    elif [ "$skipped_codex" -eq 1 ]; then
+      readiness_recommendation_en="Set CODEX_NETWORK_ENDPOINTS to a credential-free provider URL, then run ipcheck again."
+      readiness_recommendation_zh="请将无需凭据即可探测的 provider URL 设置到 CODEX_NETWORK_ENDPOINTS 后重新运行。"
+    else
+      readiness_recommendation_en="Set CLAUDE_NETWORK_ENDPOINTS to a credential-free provider URL, then run ipcheck again."
+      readiness_recommendation_zh="请将无需凭据即可探测的 provider URL 设置到 CLAUDE_NETWORK_ENDPOINTS 后重新运行。"
+    fi
+    readiness_answer_zh="暂无法判断"
+    readiness_summary_zh="当前配置的 provider 路径未被自动测量。"
     ;;
   *)
     readiness_ready=false
@@ -1393,6 +1594,7 @@ score_success_rate=0
 score_ttfb_value=0
 score_jitter_value=0
 while IFS="$TAB" read -r service result reason success_rate ttfb jitter service_usable_count; do
+  [ "$result" != "skipped" ] || continue
   case "$result" in
     good) result_rank=0 ;;
     fair) result_rank=1 ;;
@@ -1487,6 +1689,10 @@ else
   readiness_score_label_en="LIMITED"
   readiness_score_label_zh="受限"
 fi
+if [ "$overall" = "unavailable" ]; then
+  readiness_score_label_en="UNAVAILABLE"
+  readiness_score_label_zh="未测量"
+fi
 
 if [ "$UI_LANG" = "zh" ]; then
   readiness_answer="$readiness_answer_zh"
@@ -1496,7 +1702,7 @@ if [ "$UI_LANG" = "zh" ]; then
   if [ "$service_count" -eq 1 ]; then
     localized_overall_reason=$(localized_reason "$overall_reason")
   else
-    localized_overall_reason="$good_services 条良好、$fair_services 条一般、$poor_services 条较差、$blocked_services 条阻断。"
+    localized_overall_reason="$good_services 条良好、$fair_services 条一般、$poor_services 条较差、$blocked_services 条阻断、$skipped_services 条已跳过。"
   fi
 else
   readiness_answer="$readiness_answer_en"
@@ -1558,11 +1764,13 @@ localized_service_result() {
     zh:fair) printf '一般' ;;
     zh:poor) printf '较差' ;;
     zh:blocked) printf '阻断' ;;
+    zh:skipped) printf '已跳过' ;;
     *) printf '%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" ;;
   esac
 }
 
 render_primary_diagnosis() {
+  [ "$overall" != "unavailable" ] || return 0
   diagnosis_count=0
   if [ "$score_availability" -lt 35 ]; then
     diagnosis_count=$((diagnosis_count + 1))
@@ -1575,9 +1783,9 @@ render_primary_diagnosis() {
   if [ "$score_median_ttfb" -lt 30 ] && awk -v value="$score_ttfb_value" 'BEGIN { exit !(value >= 1500) }'; then
     diagnosis_count=$((diagnosis_count + 1))
     if [ "$UI_LANG" = "zh" ]; then
-      printf '  %s!%s 首字节中位延迟 %s，AI 回复启动会明显变慢。\n' "$C_YELLOW" "$C_RESET" "$(format_ui_latency "$score_ttfb_value")"
+      printf '  %s!%s 首字节中位延迟 %s，网络或网关入口可能带来明显等待。\n' "$C_YELLOW" "$C_RESET" "$(format_ui_latency "$score_ttfb_value")"
     else
-      printf '  %s!%s Median TTFB is %s; AI responses will start noticeably slower.\n' "$C_YELLOW" "$C_RESET" "$(format_ui_latency "$score_ttfb_value")"
+      printf '  %s!%s Median TTFB is %s; network or gateway ingress may add noticeable delay.\n' "$C_YELLOW" "$C_RESET" "$(format_ui_latency "$score_ttfb_value")"
     fi
   fi
   if [ "$score_jitter" -lt 7 ] && awk -v value="$score_jitter_value" 'BEGIN { exit !(value >= 500) }'; then
@@ -1623,10 +1831,16 @@ render_human() {
     6[5-9]|7[0-9]|8[0-9]) score_color="$C_YELLOW" ;;
     *) score_color="$C_RED" ;;
   esac
-  if [ "$readiness_ready" = true ]; then verdict_icon="✓"; else verdict_icon="✕"; fi
+  if [ "$overall" = "unavailable" ]; then
+    verdict_icon="?"
+  elif [ "$readiness_ready" = true ]; then
+    verdict_icon="✓"
+  else
+    verdict_icon="✕"
+  fi
   case "$overall" in
     good) verdict_color="$C_GREEN" ;;
-    fair) verdict_color="$C_YELLOW" ;;
+    fair|unavailable) verdict_color="$C_YELLOW" ;;
     *) verdict_color="$C_RED" ;;
   esac
 
@@ -1689,9 +1903,18 @@ render_human() {
   if [ "$UI_LANG" = "zh" ]; then
     section_title "AI 服务延迟"
     printf '  %sTTFB：中位/P95 越低越好；抖动越低越稳定。%s\n' "$C_DIM" "$C_RESET"
+    printf '  %s这里测量无凭据协议响应，不包含模型生成时间。%s\n' "$C_DIM" "$C_RESET"
   else
     section_title "AI service latency"
     printf '  %sTTFB: lower median/P95 is better; lower jitter is more stable.%s\n' "$C_DIM" "$C_RESET"
+    printf '  %sMeasures credential-free protocol responses, not model generation time.%s\n' "$C_DIM" "$C_RESET"
+  fi
+  if [ "$endpoint_count" -eq 0 ]; then
+    if [ "$UI_LANG" = "zh" ]; then
+      printf '  %s当前没有可安全自动探测的协议端点。%s\n' "$C_DIM" "$C_RESET"
+    else
+      printf '  %sNo protocol endpoint could be measured safely and automatically.%s\n' "$C_DIM" "$C_RESET"
+    fi
   fi
   while IFS="$TAB" read -r index service label endpoint probe_type priority; do
     sample_file="$WORK_DIR/endpoint_${index}.tsv"
@@ -1726,14 +1949,14 @@ EOF
     result_separator=""
     printf '  '
     while IFS="$TAB" read -r service result reason success_rate ttfb jitter service_usable_count; do
-      case "$result" in good) result_color="$C_GREEN" ;; fair) result_color="$C_YELLOW" ;; *) result_color="$C_RED" ;; esac
+      case "$result" in good) result_color="$C_GREEN" ;; fair|skipped) result_color="$C_YELLOW" ;; *) result_color="$C_RED" ;; esac
       printf '%s%s●%s %s %s%s%s' "$result_separator" "$result_color" "$C_RESET" "$(service_display "$service")" "$result_color" "$(localized_service_result "$result")" "$C_RESET"
       result_separator="  ·  "
     done < "$SERVICE_RESULT_FILE"
     printf '\n'
   else
     while IFS="$TAB" read -r service result reason success_rate ttfb jitter service_usable_count; do
-      case "$result" in good) result_color="$C_GREEN" ;; fair) result_color="$C_YELLOW" ;; *) result_color="$C_RED" ;; esac
+      case "$result" in good) result_color="$C_GREEN" ;; fair|skipped) result_color="$C_YELLOW" ;; *) result_color="$C_RED" ;; esac
       if [ "$EXPLAIN_SCORE" -eq 1 ]; then
         printf '  %s●%s %-12s %s%-7s%s %s\n' "$result_color" "$C_RESET" "$(service_display "$service")" "$result_color" "$(localized_service_result "$result")" "$C_RESET" "$(localized_reason "$reason")"
       else
@@ -1770,10 +1993,12 @@ EOF
     printf '\n'
   fi
 
-  if [ "$UI_LANG" = "zh" ]; then
-    printf '\n  %sHTTP 401/403 代表链路可达；不使用凭据，不产生模型费用。%s\n' "$C_DIM" "$C_RESET"
-  else
-    printf '\n  %sHTTP 401/403 means reachable; no credentials or billable model calls.%s\n' "$C_DIM" "$C_RESET"
+  if [ "$endpoint_count" -gt 0 ]; then
+    if [ "$UI_LANG" = "zh" ]; then
+      printf '\n  %sHTTP 401/403 代表链路可达；不使用凭据，不产生模型费用。%s\n' "$C_DIM" "$C_RESET"
+    else
+      printf '\n  %sHTTP 401/403 means reachable; no credentials or billable model calls.%s\n' "$C_DIM" "$C_RESET"
+    fi
   fi
 }
 
@@ -1823,9 +2048,11 @@ render_markdown() {
   fi
   if [ "$UI_LANG" = "zh" ]; then
     printf '\n## AI 服务延迟（TTFB）\n\n'
+    printf '> 测量的是无凭据协议响应，不包含模型生成时间。\n\n'
     printf '| 客户端 | 端点 | 可达 | HTTP | 成功次数 | TTFB 中位数 | TTFB P95 | 抖动 |\n|---|---|---:|---:|---:|---:|---:|---:|\n'
   else
     printf '\n## AI service latency (TTFB)\n\n'
+    printf '> Measures credential-free protocol responses, not model generation time.\n\n'
     printf '| Client | Endpoint | Reachable | HTTP | Successful samples | Median TTFB | P95 TTFB | Jitter |\n|---|---|---:|---:|---:|---:|---:|---:|\n'
   fi
   while IFS= read -r line; do
@@ -1904,5 +2131,7 @@ case "$MODE" in
   json) render_json ;;
 esac
 
-[ "$overall" = "blocked" ] && exit 1
+case "$overall" in
+  blocked|unavailable) exit 1 ;;
+esac
 exit 0

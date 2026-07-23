@@ -5,6 +5,23 @@ All notable changes to ipcheck are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-23
+
+### Fixed
+
+- Probe the current ChatGPT Codex and OpenAI Responses protocol routes instead
+  of generic website/model-list endpoints, choosing the primary route from the
+  detected Codex login mode when possible.
+- Remove unsafe `eval` use while reading proxy environment variables.
+- Skip misleading OpenAI/Anthropic probes when Codex or Claude Code uses a
+  provider-native protocol (including Bedrock, Vertex AI, Foundry, and Mantle)
+  unless an explicit provider endpoint is supplied; report it as unavailable
+  instead of scoring the wrong route.
+- Clarify that probe TTFB excludes authenticated model generation, document the
+  P95/jitter calculation, and align `NO_PROXY` handling with current Claude Code.
+- Bump JSON `schema_version` to 2 for the new `SKIPPED` service and
+  `UNAVAILABLE` overall result values.
+
 ## [0.8.1] - 2026-07-23
 
 ### Changed
@@ -132,7 +149,8 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
-[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.6.1...v0.7.0

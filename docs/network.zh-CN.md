@@ -8,13 +8,23 @@
 
 | 客户端 | 检测路径 |
 | --- | --- |
-| Codex 默认配置 | ChatGPT 和 OpenAI 可达路径 |
+| Codex 默认配置 | 尽可能按登录方式选择 ChatGPT Codex 或 OpenAI Responses 协议路径 |
 | Codex 自定义 provider | 配置的 Base URL，必要时补充 `/v1/responses` |
 | Claude Code | `${ANTHROPIC_BASE_URL}/v1/messages` |
 | 自定义 | 通过 `--endpoint` 或 `IPCHECK_ENDPOINTS` 提供的无凭据 URL |
 
 `CODEX_NETWORK_ENDPOINTS` 保持兼容；Claude 可使用
 `CLAUDE_NETWORK_ENDPOINTS` 覆盖端点。
+
+Codex 内置的 Amazon Bedrock provider 使用专用认证协议。未设置
+`CODEX_NETWORK_ENDPOINTS` 时，ipcheck 会将其报告为“已跳过”，不会误测
+无关的 OpenAI 路径。
+
+Anthropic 直连与 Anthropic 兼容网关会自动探测。Amazon Bedrock、Google
+Vertex AI、Foundry、Mantle 等 provider 原生模式使用各自的认证协议，因此 `ipcheck` 会跳过 Anthropic 自动探测，
+并要求通过 `CLAUDE_NETWORK_ENDPOINTS` 明确提供无凭据检测路径，避免对错误的
+provider 给出结论。该 provider 会显示为“已跳过”；没有其他可测客户端链路时，
+总结果显示为 `UNAVAILABLE`。
 
 ## 代理行为
 
@@ -23,10 +33,13 @@
 
 - 没有 HTTPS 代理环境变量时，Codex 和自定义检测可以使用 macOS 系统
   HTTPS 代理。
-- Claude Code 官方声明支持 `HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY`，
-  但没有声明支持 `ALL_PROXY` 或 SOCKS。
+- 当前 Claude Code 已实际支持 `HTTPS_PROXY`、`HTTP_PROXY` 与
+  `NO_PROXY`/`no_proxy` 绕过规则；Anthropic 公开的企业代理页面可能仍写着
+  `NO_PROXY` 不受支持。Claude 探测不使用 `ALL_PROXY` 或 SOCKS。
 - 因此没有同时配置 `HTTPS_PROXY` 或 `HTTP_PROXY` 时，Claude 检测会忽略
   `ALL_PROXY`。
+- Claude 探测不会把 macOS HTTP 代理显式传给 curl；系统、VPN 或 TUN 路由
+  仍可能承载这部分流量，因此不会再把它笼统标记为“直连”。
 - 检测到不兼容或可能与客户端实际链路不同的代理时，`ipcheck` 会明确警告。
 
 详见 Anthropic 的
