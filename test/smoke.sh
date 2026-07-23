@@ -230,7 +230,7 @@ run_ipcheck_direct() {
 
 bash -n "$PROJECT_DIR/bin/ipcheck"
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q '^ipcheck - diagnose Codex and Claude Code'
-[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.8.2" ]
+[ "$("$PROJECT_DIR/bin/ipcheck" --version)" = "ipcheck 0.9.0" ]
 "$PROJECT_DIR/bin/ipcheck" --help | grep -q -- '--explain-score'
 
 : > "$CURL_LOG"
@@ -302,8 +302,8 @@ printf '%s\n' "$report" | grep -q 'https://dashscope.aliyuncs.com/apps/anthropic
 printf '%s\n' "$report" | grep -q '"credentials_used":false'
 printf '%s\n' "$report" | grep -q '"billable_requests":false'
 printf '%s\n' "$report" | grep -q '"developer_readiness":{"ready":true,"level":"ready"'
-printf '%s\n' "$report" | grep -q '"score":90,"score_label":"COMFORTABLE","score_method":"rule_v2"'
-printf '%s\n' "$report" | grep -q '"score_breakdown":{"scored_service":"codex","service_path":90,"availability":35,"median_ttfb":35,"p95":10,"jitter":10'
+printf '%s\n' "$report" | grep -q '"score":100,"score_label":"COMFORTABLE","score_method":"rule_v3"'
+printf '%s\n' "$report" | grep -q '"score_breakdown":{"scored_service":"codex","service_path":100,"availability":40,"median_ttfb":40,"p95":10,"jitter":10'
 if printf '%s\n' "$report" | grep -Eq 'fixture-secret|runtime-secret'; then
   printf 'Claude credential leaked into JSON report\n' >&2
   exit 1
@@ -339,30 +339,30 @@ fi
 
 mixed_client_quality=$(IPCHECK_TEST_ANTHROPIC_TTFB=4.000 run_ipcheck --samples 1 --no-bandwidth --json)
 printf '%s\n' "$mixed_client_quality" | grep -q '"result":"poor"'
-printf '%s\n' "$mixed_client_quality" | grep -q '"score":63,"score_label":"LIMITED","score_method":"rule_v2"'
-printf '%s\n' "$mixed_client_quality" | grep -q '"scored_service":"claude","service_path":63'
+printf '%s\n' "$mixed_client_quality" | grep -q '"score":64,"score_label":"LIMITED","score_method":"rule_v3"'
+printf '%s\n' "$mixed_client_quality" | grep -q '"scored_service":"claude","service_path":70'
 
 for anthropic_status in 429 503; do
   mixed_service_error=$(IPCHECK_TEST_ANTHROPIC_CODE="$anthropic_status" run_ipcheck --samples 1 --no-bandwidth --json)
   printf '%s\n' "$mixed_service_error" | grep -q '"result":"fair"'
-  printf '%s\n' "$mixed_service_error" | grep -q '"score":64,"score_label":"LIMITED","score_method":"rule_v2"'
-  printf '%s\n' "$mixed_service_error" | grep -q '"scored_service":"claude","service_path":90'
-  printf '%s\n' "$mixed_service_error" | grep -q '"pre_cap_total":90,"verdict_cap":64'
+  printf '%s\n' "$mixed_service_error" | grep -q '"score":64,"score_label":"LIMITED","score_method":"rule_v3"'
+  printf '%s\n' "$mixed_service_error" | grep -q '"scored_service":"claude","service_path":100'
+  printf '%s\n' "$mixed_service_error" | grep -q '"pre_cap_total":100,"verdict_cap":64'
 done
 
 for anthropic_status in 429 503; do
   mixed_fair_unavailable=$(IPCHECK_TEST_TTFB=1.000 IPCHECK_TEST_ANTHROPIC_CODE="$anthropic_status" run_ipcheck --samples 1 --no-bandwidth --json)
   printf '%s\n' "$mixed_fair_unavailable" | grep -q '"result":"fair"'
-  printf '%s\n' "$mixed_fair_unavailable" | grep -q '"score":64,"score_label":"LIMITED","score_method":"rule_v2"'
-  printf '%s\n' "$mixed_fair_unavailable" | grep -q '"scored_service":"claude","service_path":85'
-  printf '%s\n' "$mixed_fair_unavailable" | grep -q '"pre_cap_total":85,"verdict_cap":64'
+  printf '%s\n' "$mixed_fair_unavailable" | grep -q '"score":64,"score_label":"LIMITED","score_method":"rule_v3"'
+  printf '%s\n' "$mixed_fair_unavailable" | grep -q '"scored_service":"claude","service_path":94'
+  printf '%s\n' "$mixed_fair_unavailable" | grep -q '"pre_cap_total":94,"verdict_cap":64'
 done
 
 mixed_blocked=$(IPCHECK_TEST_ANTHROPIC_BLOCKED=1 run_ipcheck --samples 1 --json)
 printf '%s\n' "$mixed_blocked" | grep -q '"result":"poor"'
-printf '%s\n' "$mixed_blocked" | grep -q '"score":0,"score_label":"LIMITED","score_method":"rule_v2"'
+printf '%s\n' "$mixed_blocked" | grep -q '"score":0,"score_label":"LIMITED","score_method":"rule_v3"'
 printf '%s\n' "$mixed_blocked" | grep -q '"scored_service":"claude","service_path":0'
-printf '%s\n' "$mixed_blocked" | grep -q '"pre_cap_total":10,"verdict_cap":0'
+printf '%s\n' "$mixed_blocked" | grep -q '"pre_cap_total":0,"verdict_cap":0'
 
 AUTO_HOME="$STUB_DIR/auto-home"
 mkdir -p "$AUTO_HOME/codex" "$AUTO_HOME/claude"
@@ -577,14 +577,14 @@ printf '%s\n' "$decimal_report" | grep -q '"successful_samples":8'
 fair_report=$(IPCHECK_TEST_TTFB=1.000 run_ipcheck --samples 1 --no-bandwidth --endpoint https://fair.invalid --json)
 printf '%s\n' "$fair_report" | grep -q '"result":"fair"'
 printf '%s\n' "$fair_report" | grep -q '"level":"with_caution"'
-printf '%s\n' "$fair_report" | grep -q '"score":85,"score_label":"GOOD"'
+printf '%s\n' "$fair_report" | grep -q '"score":89,"score_label":"GOOD"'
 fair_fast_bandwidth_report=$(IPCHECK_TEST_TTFB=1.000 run_ipcheck --samples 1 --endpoint https://fair.invalid --json)
 printf '%s\n' "$fair_fast_bandwidth_report" | grep -q '"score":89,"score_label":"GOOD"'
 fair_slow_bandwidth_report=$(IPCHECK_TEST_TTFB=1.000 IPCHECK_TEST_BANDWIDTH_SPEED=100000 IPCHECK_TEST_UPLOAD_SPEED=100000 run_ipcheck --samples 1 --endpoint https://fair.invalid --json)
-printf '%s\n' "$fair_slow_bandwidth_report" | grep -q '"score":75,"score_label":"GOOD"'
+printf '%s\n' "$fair_slow_bandwidth_report" | grep -q '"score":89,"score_label":"GOOD"'
 
 just_below_poor=$(IPCHECK_TEST_TTFB=2.999 run_ipcheck --samples 1 --no-bandwidth --endpoint https://boundary.invalid --json)
-printf '%s\n' "$just_below_poor" | grep -q '"score":74,"score_label":"USABLE"'
+printf '%s\n' "$just_below_poor" | grep -q '"score":82,"score_label":"GOOD"'
 at_poor_boundary=$(IPCHECK_TEST_TTFB=3.000 run_ipcheck --samples 1 --no-bandwidth --endpoint https://boundary.invalid --json)
 printf '%s\n' "$at_poor_boundary" | grep -q '"score":64,"score_label":"LIMITED"'
 
@@ -592,8 +592,8 @@ SCORE_SCENARIO_FILE="$STUB_DIR/score-scenario-attempt"
 : > "$SCORE_SCENARIO_FILE"
 score_scenario=$(IPCHECK_TEST_SCORE_FILE="$SCORE_SCENARIO_FILE" IPCHECK_TEST_BANDWIDTH_SPEED=400000 IPCHECK_TEST_UPLOAD_SPEED=425000 run_ipcheck --samples 3 --endpoint https://score-scenario.invalid --json)
 printf '%s\n' "$score_scenario" | grep -q '"result":"poor"'
-printf '%s\n' "$score_scenario" | grep -q '"score":47,"score_label":"LIMITED","score_method":"rule_v2"'
-printf '%s\n' "$score_scenario" | grep -q '"service_path":49,"availability":35,"median_ttfb":14,"p95":0,"jitter":0,"download":-5'
+printf '%s\n' "$score_scenario" | grep -q '"score":54,"score_label":"LIMITED","score_method":"rule_v3"'
+printf '%s\n' "$score_scenario" | grep -q '"service_path":56,"availability":40,"median_ttfb":16,"p95":0,"jitter":0,"download":-2'
 
 fair_human=$(IPCHECK_TEST_TTFB=1.000 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-progress --endpoint https://fair.invalid)
 printf '%s\n' "$fair_human" | grep -q 'Ready to code? YES, WITH CAUTION'
@@ -648,7 +648,7 @@ printf '%s\n' "$plain_human" | grep -q '█'
 
 narrow_human=$(COLUMNS=70 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-color --endpoint https://narrow.invalid)
 printf '%s\n' "$narrow_human" | grep -q '^    HTTP 401 · 1/1 · median'
-printf '%s\n' "$narrow_human" | grep -q '█████████████░'
+printf '%s\n' "$narrow_human" | grep -q '██████████████'
 
 wide_human=$(COLUMNS=120 IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --no-color --endpoint https://wide.invalid)
 printf '%s\n' "$wide_human" | grep -q '✓ REACH.*HTTP 401.*median'
@@ -816,34 +816,35 @@ printf '%s\n' "$socks_report" | grep -q 'Claude Code does not document ALL_PROXY
 grep -q '^env:ALL_PROXY=$' "$CURL_LOG"
 
 bandwidth_report=$(run_ipcheck --samples 1 --json)
-printf '%s\n' "$bandwidth_report" | grep -q '"score":100,"score_label":"COMFORTABLE","score_method":"rule_v2"'
-printf '%s\n' "$bandwidth_report" | grep -q '"score_breakdown":{"scored_service":"codex","service_path":90,"availability":35,"median_ttfb":35,"p95":10,"jitter":10,"download":5,"download_speed":5,"download_partial_penalty":0,"upload":5'
+printf '%s\n' "$bandwidth_report" | grep -q '"score":100,"score_label":"COMFORTABLE","score_method":"rule_v3"'
+printf '%s\n' "$bandwidth_report" | grep -q '"score_breakdown":{"scored_service":"codex","service_path":100,"availability":40,"median_ttfb":40,"p95":10,"jitter":10,"download":0,"download_speed":0,"download_partial_penalty":0,"upload":0'
 printf '%s\n' "$bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":true,"http_code":"200"'
+printf '%s\n' "$bandwidth_report" | grep -q '"scope":"cloudflare_reference_path","method":"single_capped_transfer","represents_api_path":false,"represents_peak_bandwidth":false'
 printf '%s\n' "$bandwidth_report" | grep -q '"download":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":2000000,"bytes_per_second":10000000,"mbps":80.0,"rating":"fast"}'
 printf '%s\n' "$bandwidth_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":true,"http_code":"200","bytes":1000000,"bytes_per_second":2000000,"mbps":16.0,"rating":"fast"}'
 printf '%s\n' "$bandwidth_report" | grep -q '"upload_payload":"zero-filled"'
 bandwidth_human=$(IPCHECK_LANG=zh run_ipcheck --samples 1)
-printf '%s\n' "$bandwidth_human" | grep -q '◆ 网络带宽'
+printf '%s\n' "$bandwidth_human" | grep -q '◆ 代理链路参考传输'
 printf '%s\n' "$bandwidth_human" | grep -q '100/100.*舒适'
-printf '%s\n' "$bandwidth_human" | grep -q '下载  80.0 Mbps.*快.*Cloudflare，最多 2 MB'
-printf '%s\n' "$bandwidth_human" | grep -q '上传  16.0 Mbps.*快.*Cloudflare，最多 1 MB 零字节'
-printf '%s\n' "$bandwidth_human" | grep -q '路径  HTTPS_PROXY=http://127.0.0.1:1080'
+printf '%s\n' "$bandwidth_human" | grep -q '下行样本  80.0 Mbps.*样本较高.*Cloudflare，最多 2 MB'
+printf '%s\n' "$bandwidth_human" | grep -q '上行样本  16.0 Mbps.*样本较高.*Cloudflare，最多 1 MB 零字节'
+printf '%s\n' "$bandwidth_human" | grep -q '范围.*当前代理 → Cloudflare；小文件样本，非峰值宽带，不代表 AI API 吞吐'
 score_explanation=$(IPCHECK_LANG=en run_ipcheck --samples 1 --explain-score)
 printf '%s\n' "$score_explanation" | grep -q '^  Score breakdown$'
-printf '%s\n' "$score_explanation" | grep -q 'Service path.*90/90.*reachability 35.*TTFB 35.*P95 10.*jitter 10'
-printf '%s\n' "$score_explanation" | grep -q 'Download.*+5.*80.0 Mbps.*FAST'
-printf '%s\n' "$score_explanation" | grep -q 'Upload.*+5.*16.0 Mbps.*FAST'
+printf '%s\n' "$score_explanation" | grep -q 'Service path.*100/100.*reachability 40.*TTFB 40.*P95 10.*jitter 10'
+printf '%s\n' "$score_explanation" | grep -q 'Download reference.*0.*80.0 Mbps.*HIGHER SAMPLE'
+printf '%s\n' "$score_explanation" | grep -q 'Upload reference.*0.*16.0 Mbps.*HIGHER SAMPLE'
 score_explanation_zh=$(IPCHECK_LANG=zh run_ipcheck --samples 1 --markdown --explain-score)
-printf '%s\n' "$score_explanation_zh" | grep -q '评分依据：服务链路 90/90（可达性 35 + TTFB 35 + P95 10 + 抖动 10）；下载 5（快）；上传 5（快）；限幅前 100；结论上限 100；总分 100。'
+printf '%s\n' "$score_explanation_zh" | grep -q '评分依据：服务链路 100/100（可达性 40 + TTFB 40 + P95 10 + 抖动 10）；下行参考样本 0（样本较高）；上行参考样本 0（样本较高）；限幅前 100；结论上限 100；总分 100。'
 score_explanation_without_bandwidth=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --explain-score)
-printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Download.*0.*0.0 Mbps.*UNAVAILABLE'
-printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Upload.*0.*0.0 Mbps.*UNAVAILABLE'
+printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Download reference.*0.*0.0 Mbps.*UNAVAILABLE'
+printf '%s\n' "$score_explanation_without_bandwidth" | grep -q 'Upload reference.*0.*0.0 Mbps.*UNAVAILABLE'
 
 slow_upload_human=$(IPCHECK_TEST_UPLOAD_SPEED=100000 IPCHECK_LANG=en run_ipcheck --samples 1 --explain-score)
-printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*0.8 Mbps.*SLOW'
-printf '%s\n' "$slow_upload_human" | grep -q '90/100.*COMFORTABLE'
-printf '%s\n' "$slow_upload_human" | grep -q 'Upload.*-5.*0.8 Mbps.*SLOW'
-printf '%s\n' "$slow_upload_human" | grep -q 'Upload is slow; sending large code contexts may take longer.'
+printf '%s\n' "$slow_upload_human" | grep -q 'Up sample.*0.8 Mbps.*LOW SAMPLE'
+printf '%s\n' "$slow_upload_human" | grep -q '98/100.*COMFORTABLE'
+printf '%s\n' "$slow_upload_human" | grep -q 'Upload reference.*-2.*0.8 Mbps.*LOW SAMPLE'
+printf '%s\n' "$slow_upload_human" | grep -q 'Cloudflare upload sample is low'
 invalid_bandwidth_report=$(IPCHECK_TEST_BANDWIDTH_CODE=407 run_ipcheck --samples 1 --json)
 printf '%s\n' "$invalid_bandwidth_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"407","bytes":0,"bytes_per_second":0,'
 invalid_upload_report=$(IPCHECK_TEST_UPLOAD_CODE=503 run_ipcheck --samples 1 --json)
@@ -854,24 +855,26 @@ printf '%s\n' "$no_upload_report" | grep -q '"upload":{"enabled":false,"availabl
 
 partial_upload_report=$(IPCHECK_TEST_UPLOAD_BYTES=500000 IPCHECK_TEST_UPLOAD_EXIT=28 run_ipcheck --samples 1 --json)
 printf '%s\n' "$partial_upload_report" | grep -q '"upload":{"enabled":true,"available":true,"complete":false,"http_code":"200","bytes":500000,"bytes_per_second":2000000,"mbps":16.0,"rating":"partial"}'
-printf '%s\n' "$partial_upload_report" | grep -q '"score":98,"score_label":"COMFORTABLE"'
+printf '%s\n' "$partial_upload_report" | grep -q '"score":99,"score_label":"COMFORTABLE"'
 
 partial_download_report=$(IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 run_ipcheck --samples 1 --json)
 printf '%s\n' "$partial_download_report" | grep -q '"bandwidth":{"enabled":true,"available":false,"http_code":"000","bytes":0,"bytes_per_second":0,'
 printf '%s\n' "$partial_download_report" | grep -q '"download":{"enabled":true,"available":true,"complete":false,"http_code":"200","bytes":500000,"bytes_per_second":10000000,"mbps":80.0,"rating":"partial"}'
 
 complete_slow_download=$(IPCHECK_TEST_BANDWIDTH_SPEED=12500 run_ipcheck --samples 1 --json)
-printf '%s\n' "$complete_slow_download" | grep -q '"score":90,"score_label":"COMFORTABLE"'
+printf '%s\n' "$complete_slow_download" | grep -q '"score":98,"score_label":"COMFORTABLE"'
+rounded_threshold_report=$(IPCHECK_TEST_UPLOAD_SPEED=245000 run_ipcheck --samples 1 --json)
+printf '%s\n' "$rounded_threshold_report" | grep -q '"mbps":2.0,"rating":"adequate"'
 partial_slow_download=$(IPCHECK_TEST_BANDWIDTH_SPEED=12500 IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 run_ipcheck --samples 1 --json)
-printf '%s\n' "$partial_slow_download" | grep -q '"score":88,"score_label":"GOOD"'
-printf '%s\n' "$partial_slow_download" | grep -q '"download":-7,"download_speed":-5,"download_partial_penalty":-2'
+printf '%s\n' "$partial_slow_download" | grep -q '"score":99,"score_label":"COMFORTABLE"'
+printf '%s\n' "$partial_slow_download" | grep -q '"download":-1,"download_speed":0,"download_partial_penalty":-1'
 
 partial_human=$(IPCHECK_TEST_UPLOAD_BYTES=500000 IPCHECK_TEST_UPLOAD_EXIT=28 IPCHECK_LANG=en run_ipcheck --samples 1)
-printf '%s\n' "$partial_human" | grep -q 'Upload.*16.0 Mbps.*ESTIMATE'
-printf '%s\n' "$partial_human" | grep -q 'partial estimates and do not prove bandwidth is sufficient'
+printf '%s\n' "$partial_human" | grep -q 'Up sample.*16.0 Mbps.*INCOMPLETE ESTIMATE'
+printf '%s\n' "$partial_human" | grep -q 'partial estimates and do not prove that path throughput is sufficient'
 partial_markdown=$(IPCHECK_TEST_BANDWIDTH_BYTES=500000 IPCHECK_TEST_BANDWIDTH_EXIT=28 IPCHECK_LANG=en run_ipcheck --samples 1 --markdown)
-printf '%s\n' "$partial_markdown" | grep -q '| Download | 80.0 Mbps | ESTIMATE |'
-printf '%s\n' "$partial_markdown" | grep -q 'partial estimates and do not prove bandwidth is sufficient'
+printf '%s\n' "$partial_markdown" | grep -q '| Down | 80.0 Mbps | INCOMPLETE ESTIMATE |'
+printf '%s\n' "$partial_markdown" | grep -q 'partial estimates and do not prove that path throughput is sufficient'
 
 progress_report=$(IPCHECK_LANG=en run_ipcheck --samples 1 --no-bandwidth --progress 2>&1 >/dev/null)
 printf '%s\n' "$progress_report" | grep -q 'Press Ctrl+C to cancel at any time.'
@@ -952,7 +955,7 @@ set -e
 [ "$blocked_exit" -eq 1 ]
 printf '%s\n' "$blocked_report" | grep -q '"http_code":"000"'
 printf '%s\n' "$blocked_report" | grep -q '"bandwidth":{"enabled":false,"available":false,"http_code":"000"'
-printf '%s\n' "$blocked_report" | grep -q '"score":0,"score_label":"LIMITED","score_method":"rule_v2"'
+printf '%s\n' "$blocked_report" | grep -q '"score":0,"score_label":"LIMITED","score_method":"rule_v3"'
 
 markdown=$(run_ipcheck --samples 1 --no-bandwidth --markdown)
 printf '%s\n' "$markdown" | grep -q '^# ipcheck: AI Coding Network Report'

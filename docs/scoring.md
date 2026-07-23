@@ -6,7 +6,7 @@
 
 - a measured service result: `GOOD`, `FAIR`, `POOR`, or `BLOCKED`, plus
   `SKIPPED` when a provider-specific route cannot be probed safely;
-- a 0–100 development-readiness score calculated with `rule_v2`.
+- a 0–100 development-readiness score calculated with `rule_v3`.
 
 The score is a transparent heuristic, not a user percentile or a benchmark of
 model intelligence.
@@ -37,39 +37,42 @@ Skipped clients do not affect another measured client's score. If every
 selected client is skipped, the overall result is `UNAVAILABLE`, the score is
 0, and the command exits with status 1.
 
-## Rule v2 service-path points
+## Rule v3 service-path points
 
-The selected service path contributes up to 90 points.
+The selected service path contributes up to 100 points.
 
 | Component | Maximum | Rule |
 | --- | ---: | --- |
-| Reachability | 35 | 35 at 100% success, 22 at 60–99%, 10 above 0%, otherwise 0 |
-| Median TTFB | 35 | 35 below 800 ms, 30 below 1,500, 22 below 3,000, 14 below 5,000, otherwise 6 |
+| Reachability | 40 | 40 at 100% success, 25 at 60–99%, 11 above 0%, otherwise 0 |
+| Median TTFB | 40 | 40 below 800 ms, 34 below 1,500, 25 below 3,000, 16 below 5,000, otherwise 7 |
 | P95 TTFB | 10 | 10 below 2,000 ms, 7 below 4,000, 4 below 6,000, otherwise 0 |
 | Jitter | 10 | 10 below 200 ms, 7 below 500, 4 below 1,000, otherwise 0 |
 
 Blocked paths receive zero latency and stability points.
 
-## Bandwidth adjustments
+## Cloudflare reference-transfer adjustments
 
-Download and upload are scored independently.
+The capped Cloudflare samples are scored independently, but never add points.
+They measure the current path to Cloudflare, not peak bandwidth or AI API
+throughput.
 
 | Rating | Points per direction |
 | --- | ---: |
-| `FAST` | +5 |
-| `ADEQUATE` | +3 |
-| `SLOW` | -5 |
+| `FAST` | 0 |
+| `ADEQUATE` | 0 |
+| `SLOW` | -2 |
 | Unavailable or skipped | 0 |
-| Incomplete sample | an additional -2 |
+| Incomplete sample | -1 instead of the speed rating |
 
 Download is `FAST` from 25 Mbps and `ADEQUATE` from 5 Mbps. Upload is `FAST`
-from 10 Mbps and `ADEQUATE` from 2 Mbps. These thresholds represent common
-development work, not general-purpose ISP quality.
+from 10 Mbps and `ADEQUATE` from 2 Mbps. These thresholds only classify the
+capped Cloudflare sample; they are not general-purpose ISP quality ratings.
+Across both directions, reference transfers can reduce the score by at most
+four points.
 
 ## Caps and labels
 
-Service health limits the final score so bandwidth cannot conceal an unhealthy
-AI route:
+Service health still limits the final score:
 
 - usable `FAIR` paths are capped at 89;
 - temporarily unavailable `FAIR` and `POOR` paths are capped at 64;

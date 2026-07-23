@@ -180,8 +180,8 @@ fi
                 "  █",
                 "  评分构成",
                 "    服务链路",
-                "    下载",
-                "    上传",
+                "    下行参考样本",
+                "    上行参考样本",
                 "  当前网络",
                 "  可以正常开发",
                 "  建议先",
@@ -195,9 +195,11 @@ fi
                 "    HTTP",
                 "◆ AI 服务结论",
                 "  ●",
-                "◆ 网络带宽",
-                "  下载",
-                "  上传",
+                "◆ 代理链路参考传输",
+                "  下行样本",
+                "  上行样本",
+                "  范围",
+                "  建议",
             )
         else:
             report_prefixes = (
@@ -220,8 +222,8 @@ fi
                 "  █",
                 "  Score breakdown",
                 "    Service path",
-                "    Download",
-                "    Upload",
+                "    Download reference",
+                "    Upload reference",
                 "  This network",
                 "  You can work normally",
                 "  Switch proxy routes",
@@ -235,9 +237,11 @@ fi
                 "    HTTP",
                 "◆ AI service results",
                 "  ●",
-                "◆ Network bandwidth",
-                "  Download",
-                "  Upload",
+                "◆ Proxy-path reference transfer",
+                "  Down sample",
+                "  Up sample",
+                "  Scope",
+                "  Advice",
             )
         report = [line for line in process.stdout.splitlines() if line.startswith(report_prefixes)]
         return [ANSI_RE.sub("", line).removeprefix("⌨ ") for line in progress + report]
@@ -250,7 +254,7 @@ def line_color(line: str) -> str:
         return GREEN if score >= 90 else YELLOW if score >= 65 else RED
     if any(token in line for token in ("Ready to code? YES", "现在适合开发吗？适合")):
         return GREEN
-    if line.startswith(("◆ Detected clients", "◆ AI service latency", "◆ AI service results", "◆ Network bandwidth", "◆ 检测到的客户端", "◆ AI 服务延迟", "◆ AI 服务结论", "◆ 网络带宽", "ipcheck v")):
+    if line.startswith(("◆ Detected clients", "◆ AI service latency", "◆ AI service results", "◆ Proxy-path reference transfer", "◆ 检测到的客户端", "◆ AI 服务延迟", "◆ AI 服务结论", "◆ 代理链路参考传输", "ipcheck v")):
         return CYAN
     if line.startswith(("Checking", "Press Ctrl+C", "按 Ctrl+C")):
         return MUTED

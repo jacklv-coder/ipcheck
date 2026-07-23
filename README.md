@@ -11,7 +11,7 @@ proxy before it breaks your coding flow.
 
 `ipcheck` is a zero-dependency Bash CLI that tests the real service routes used
 by AI coding clients. It reports reachability, median/P95 time to first byte,
-jitter, reference download/upload speed, and a plain-language readiness score.
+jitter, capped proxy-path transfer samples, and a plain-language readiness score.
 No Codex or Claude login is required. It never reads API keys, sends prompts,
 or makes billable model requests.
 
@@ -35,7 +35,7 @@ brew upgrade ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.8.2/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.9.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -50,7 +50,7 @@ Make sure `$HOME/.local/bin` is on `PATH`.
 | --- | --- |
 | Speedtest | Peak bandwidth to a nearby test server |
 | `ping` / `curl` | Basic reachability to one address |
-| `ipcheck` | Codex/Claude routes, proxy path, TTFB, P95, jitter, failures, bandwidth, and coding readiness |
+| `ipcheck` | Codex/Claude routes, proxy path, TTFB, P95, jitter, failures, capped reference transfers, and coding readiness |
 
 For coding agents, a 500 Mbps connection can still feel slow when the first byte
 takes five seconds or the proxy route is unstable. `ipcheck` measures those
@@ -62,8 +62,8 @@ interactive bottlenecks directly.
   broken one.
 - Understands OpenAI, Anthropic, LiteLLM-style gateways, and Alibaba Cloud
   Model Studio/DashScope Anthropic-compatible routes.
-- Explains whether the main problem is reachability, TTFB, P95, jitter,
-  download speed, or upload speed.
+- Explains whether the main problem is reachability, TTFB, P95, jitter, or a
+  low Cloudflare reference-transfer sample.
 - Produces human, Markdown, and stable versioned JSON reports.
 - Shows animated progress, adapts to narrow terminals, and exits cleanly with
   status `130` when cancelled with `Ctrl+C`.
@@ -87,14 +87,14 @@ or Mantle. `ipcheck` warns instead of silently testing the wrong provider.
 | Command | Purpose |
 | --- | --- |
 | `ipcheck` | Auto-detect installed clients and run the standard check |
-| `ipcheck --quick` | One sample, shorter timeout, no bandwidth transfer |
+| `ipcheck --quick` | One sample, shorter timeout, no reference transfer |
 | `ipcheck codex` / `ipcheck claude` | Test only one client |
 | `ipcheck all` | Test Codex and Claude Code together |
 | `ipcheck --explain-score` | Show every score component |
 | `ipcheck --json` | Emit structured output for automation |
 | `ipcheck --markdown` | Create a shareable support report |
 | `ipcheck --system` | Add macOS `networkQuality` measurements |
-| `ipcheck --no-bandwidth` | Skip capped Cloudflare download/upload checks |
+| `ipcheck --no-bandwidth` | Skip capped Cloudflare reference transfers |
 
 Run `ipcheck --help` for every option and environment variable.
 
@@ -115,8 +115,13 @@ TTFB is measured from a credential-free protocol request. It reflects DNS,
 proxy, TLS, network, and gateway ingress—not authenticated model generation or
 time to the model's first token.
 
-The 0–100 score is a transparent rule, not a user percentile. It prioritizes
-service reachability and latency over peak bandwidth. See
+The Cloudflare samples describe small transfers from the current proxy/network
+path to Cloudflare. They are not peak-bandwidth tests and do not represent
+OpenAI, Anthropic, GitHub, or npm throughput.
+
+The 0–100 score is a transparent rule, not a user percentile. The measured AI
+service path supplies all positive points; low Cloudflare samples can only make
+a small deduction. See
 [Scoring and result rules](docs/scoring.md) for the exact calculation.
 
 ## Claude Code gateway example
@@ -149,7 +154,7 @@ See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 ## Documentation
 
 - [Scoring and result rules](docs/scoring.md)
-- [Routes, proxies, and bandwidth](docs/network.md)
+- [Routes, proxies, and reference transfers](docs/network.md)
 - [Reports, automation, and exit codes](docs/reporting.md)
 - [Release history](CHANGELOG.md)
 

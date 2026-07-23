@@ -35,8 +35,12 @@ ipcheck --json > ipcheck-report.json
 - 每个服务、每个端点的测量数据；
 - 评分方法和逐项分数；
 - 警告及脱敏后的网络路径；
-- 上下行带宽和可选的 macOS 系统数据；
+- 限量 Cloudflare 参考传输和可选的 macOS 系统数据；
 - 明确的隐私保证。
+
+JSON 为兼容已有使用方继续保留 `bandwidth` 对象名；其中的 `scope`、`method`、
+`represents_api_path` 和 `represents_peak_bandwidth` 字段明确限定其含义是
+Cloudflare 参考传输。
 
 增加兼容字段不会修改 `schema_version`，破坏性变更才会升级。JSON 和 Markdown
 模式不会输出动态进度。

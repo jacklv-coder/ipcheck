@@ -15,10 +15,11 @@ I built ipcheck after repeatedly wondering whether an AI coding CLI was slow
 because of the model, my proxy, or the configured gateway.
 
 It is a zero-dependency Bash CLI that detects Codex and Claude Code routes, then
-measures reachability, TTFB median/P95, jitter, and small reference download and
-upload samples. It gives each client a separate verdict and a transparent
-readiness score. HTTP 401/403 is treated as reachable, so no API key or billable
-model request is needed.
+measures reachability, TTFB median/P95, jitter, and capped Cloudflare
+reference-transfer samples. The Cloudflare samples describe only the current
+proxy path, not peak bandwidth or AI API throughput. It gives each client a
+separate verdict and a transparent readiness score. HTTP 401/403 is treated as
+reachable, so no API key or billable model request is needed.
 
 Install:
 
@@ -46,8 +47,10 @@ than peak download speed.
 
 ipcheck tests the real routes configured for Codex and Claude Code without
 reading or sending credentials. It reports per-client latency and reachability,
-small reference download/upload measurements, and a plain-language “ready to
-code?” verdict. It is MIT licensed and runs with Bash + curl on macOS and Linux.
+capped Cloudflare reference-transfer samples, and a plain-language “ready to
+code?” verdict. Those samples describe the current proxy path, not peak
+bandwidth or AI API throughput. It is MIT licensed and runs with Bash + curl on
+macOS and Linux.
 
 Repo and demo: https://github.com/jacklv-coder/ipcheck
 
@@ -63,9 +66,10 @@ Repo and demo: https://github.com/jacklv-coder/ipcheck
 普通测速很难回答。
 
 我做了一个开源命令行工具 ipcheck。它会自动识别 Codex 和 Claude Code 的真实
-网络路径，检测可达性、TTFB 中位数/P95、抖动，并用少量数据测试参考下载和
-上传速度，最后直接给出“现在是否适合开发”和透明的规则评分。HTTP 401/403
-只代表链路可达；工具不会读取或发送 API Key，也不会产生模型调用费用。
+网络路径，检测可达性、TTFB 中位数/P95、抖动，并用少量数据采集当前代理到
+Cloudflare 的参考传输样本，最后直接给出“现在是否适合开发”和透明的规则评分。
+这个样本不是峰值宽带或 AI API 吞吐；HTTP 401/403 只代表链路可达。工具不会
+读取或发送 API Key，也不会产生模型调用费用。
 
 安装：
 

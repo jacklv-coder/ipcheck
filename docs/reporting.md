@@ -38,8 +38,12 @@ automation. Output includes:
 - per-service and per-endpoint measurements;
 - score method and component breakdown;
 - warnings and redacted network path;
-- download/upload and optional macOS system measurements;
+- capped Cloudflare reference transfers and optional macOS system measurements;
 - explicit privacy guarantees.
+
+The `bandwidth` object name is retained for JSON compatibility. Its
+`scope`, `method`, `represents_api_path`, and `represents_peak_bandwidth`
+fields define the narrower Cloudflare reference-transfer meaning.
 
 Additive fields may appear without changing `schema_version`; breaking field
 changes increment it. Progress is disabled for JSON and Markdown modes.

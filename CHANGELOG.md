@@ -5,6 +5,28 @@ All notable changes to ipcheck are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-23
+
+### Changed
+
+- Rename the capped Cloudflare section to proxy-path reference transfers and
+  state directly in terminal, Markdown, JSON, and bilingual documentation that
+  it is not a peak-bandwidth test or AI API throughput measurement.
+- Replace readiness-score rule v2 with rule v3: the measured AI service path
+  now supplies all positive points, while complete low Cloudflare samples can
+  only deduct two points per direction and incomplete samples deduct one.
+- Describe Cloudflare results as high, moderate, or low samples instead of
+  presenting them as general-purpose fast/adequate/slow network ratings.
+- Keep the existing JSON `bandwidth` object for compatibility while adding
+  explicit scope, method, API-path, and peak-bandwidth metadata.
+
+### Fixed
+
+- Rate reference samples using the same rounded Mbps value shown to users so a
+  displayed threshold value cannot contradict its label.
+- Remove duplicate Cloudflare warnings from the primary AI-service diagnosis
+  and keep the auxiliary signal in its own clearly scoped section.
+
 ## [0.8.2] - 2026-07-23
 
 ### Fixed
@@ -149,7 +171,8 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
-[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.7.0...v0.8.0
