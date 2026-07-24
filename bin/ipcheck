@@ -10,16 +10,19 @@ unset LC_ALL
 LC_NUMERIC=C
 export LC_NUMERIC
 
-VERSION="0.9.0"
-SCHEMA_VERSION=2
+VERSION="0.10.0"
+SCHEMA_VERSION=3
 SAMPLES=3
 TIMEOUT=15
 SERVICE_MODE="auto"
 CLI_ENDPOINTS=""
 CLI_ENDPOINTS_SET=0
-BANDWIDTH_URL="https://speed.cloudflare.com/__down?bytes=2000000"
+BANDWIDTH_URL_BASE="https://speed.cloudflare.com/__down?bytes="
+DOWNLOAD_SAMPLE_BYTES="262144 2000000"
 UPLOAD_URL="https://speed.cloudflare.com/__up"
-UPLOAD_BYTES=1000000
+UPLOAD_SAMPLE_BYTES="131072 1000000"
+TRANSFER_SAMPLE_TOTAL=2
+TRANSFER_TIMEOUT_MAX=8
 MODE="human"
 RUN_BANDWIDTH=1
 RUN_UPLOAD=1
@@ -44,8 +47,8 @@ Options:
   --samples N            Requests per endpoint (default: 3).
   --timeout SECONDS      Per-request timeout (default: 15).
   --quick                 Use 1 sample, an 8s timeout, and skip reference transfers.
-  --no-bandwidth         Skip capped Cloudflare reference transfers.
-  --no-upload            Skip only the 1 MB reference upload test.
+  --no-bandwidth         Skip multi-size Cloudflare reference transfers.
+  --no-upload            Skip only the reference upload samples.
   --system               Also run macOS networkQuality when available.
   --color                Always use terminal colors in human output.
   --no-color             Disable terminal colors.
@@ -177,6 +180,9 @@ case "$LANG_MODE" in
   auto|en|zh) ;;
   *) die "language must be auto, en, or zh" ;;
 esac
+
+TRANSFER_TIMEOUT="$TIMEOUT"
+[ "$TRANSFER_TIMEOUT" -le "$TRANSFER_TIMEOUT_MAX" ] || TRANSFER_TIMEOUT="$TRANSFER_TIMEOUT_MAX"
 
 UI_LANG="$LANG_MODE"
 if [ "$UI_LANG" = "auto" ]; then
@@ -1009,42 +1015,59 @@ bandwidth_rating() {
   if [ "$direction" = "download" ]; then
     awk -v speed="$speed" 'BEGIN {
       mbps = sprintf("%.1f", speed * 8 / 1000000) + 0
-      if (mbps >= 25) print "fast"
-      else if (mbps >= 5) print "adequate"
-      else print "slow"
+      if (mbps >= 10) print "fast"
+      else if (mbps >= 3) print "adequate"
+      else if (mbps >= 1) print "slow"
+      else print "severe"
     }'
   else
     awk -v speed="$speed" 'BEGIN {
       mbps = sprintf("%.1f", speed * 8 / 1000000) + 0
-      if (mbps >= 10) print "fast"
-      else if (mbps >= 2) print "adequate"
-      else print "slow"
+      if (mbps >= 5) print "fast"
+      else if (mbps >= 1) print "adequate"
+      else if (mbps >= 0.3) print "slow"
+      else print "severe"
     }'
   fi
 }
 
 localized_bandwidth_rating() {
   case "$UI_LANG:$1" in
-    zh:fast) printf '样本较高' ;;
-    zh:adequate) printf '样本一般' ;;
-    zh:slow) printf '样本偏低' ;;
+    zh:fast) printf '传输舒适' ;;
+    zh:adequate) printf '轻度受限' ;;
+    zh:slow) printf '明显受限' ;;
+    zh:severe) printf '严重受限' ;;
     zh:partial) printf '未完成估算' ;;
     zh:unavailable) printf '不可用' ;;
-    *:fast) printf 'HIGHER SAMPLE' ;;
-    *:adequate) printf 'MODERATE SAMPLE' ;;
-    *:slow) printf 'LOW SAMPLE' ;;
+    *:fast) printf 'COMFORTABLE' ;;
+    *:adequate) printf 'MILDLY LIMITED' ;;
+    *:slow) printf 'CONSTRAINED' ;;
+    *:severe) printf 'SEVERELY LIMITED' ;;
     *:partial) printf 'INCOMPLETE ESTIMATE' ;;
     *) printf 'UNAVAILABLE' ;;
+  esac
+}
+
+localized_transfer_confidence() {
+  case "$UI_LANG:$1" in
+    zh:high) printf '高' ;;
+    zh:medium) printf '中' ;;
+    zh:low) printf '低' ;;
+    zh:unavailable|zh:unmeasured) printf '未测量' ;;
+    *:high) printf 'HIGH' ;;
+    *:medium) printf 'MEDIUM' ;;
+    *:low) printf 'LOW' ;;
+    *) printf 'UNMEASURED' ;;
   esac
 }
 
 partial_sample_note() {
   [ "$1" = "partial" ] || return 0
   case "$2:$UI_LANG" in
-    human:zh) printf ' · 未完成样本 -1' ;;
-    human:*) printf ' · incomplete sample -1' ;;
-    markdown:zh) printf '，未完成样本 -1' ;;
-    markdown:*) printf ', incomplete sample -1' ;;
+    human:zh) printf ' · 可信度较低' ;;
+    human:*) printf ' · lower confidence' ;;
+    markdown:zh) printf '，可信度较低' ;;
+    markdown:*) printf ', lower confidence' ;;
   esac
 }
 
@@ -1126,50 +1149,106 @@ bandwidth_code=000
 bandwidth_valid=0
 bandwidth_bytes=0
 bandwidth_complete=false
-bandwidth_exit=0
+bandwidth_sample_count=0
+bandwidth_complete_count=0
+bandwidth_timeout_count=0
+download_confirmed_severe=0
+download_confirmed_constrained=0
+download_sample_state="unavailable"
 download_rating="unavailable"
 download_speed_rating="unavailable"
 if [ "$RUN_BANDWIDTH" -eq 1 ]; then
   if [ "$UI_LANG" = "zh" ]; then
-    progress_note "●" "正在测试代理链路下行样本（2 MB）…"
+    progress_note "●" "正在测试代理链路下行（2 个不同大小的样本，最大 2 MB）…"
   else
-    progress_note "●" "Testing proxy-path download sample (2 MB)…"
+    progress_note "●" "Testing proxy-path download (2 differently sized samples, up to 2 MB)…"
   fi
-  bandwidth_metrics_file="$WORK_DIR/bandwidth-metrics.txt"
-  curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
-    -A "ipcheck/$VERSION" \
-    --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
-    -w '%{http_code}\t%{size_download}\t%{speed_download}' \
-    --url "$BANDWIDTH_URL" > "$bandwidth_metrics_file" 2>/dev/null
-  bandwidth_exit=$?
-  bandwidth_metrics=$(< "$bandwidth_metrics_file")
-  if [ -n "$bandwidth_metrics" ]; then
-    IFS="$TAB" read -r bandwidth_code bandwidth_bytes bandwidth_speed <<EOF
+  bandwidth_samples_file="$WORK_DIR/bandwidth-samples.tsv"
+  : > "$bandwidth_samples_file"
+  download_index=0
+  for expected_bytes in $DOWNLOAD_SAMPLE_BYTES; do
+    download_index=$((download_index + 1))
+    bandwidth_metrics_file="$WORK_DIR/bandwidth-metrics-$download_index.txt"
+    curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
+      -A "ipcheck/$VERSION" \
+      --connect-timeout "$TRANSFER_TIMEOUT" --max-time "$TRANSFER_TIMEOUT" \
+      -w '%{http_code}\t%{size_download}\t%{speed_download}' \
+      --url "${BANDWIDTH_URL_BASE}${expected_bytes}" > "$bandwidth_metrics_file" 2>/dev/null
+    sample_exit=$?
+    sample_code=000
+    sample_bytes=0
+    sample_speed=0
+    sample_valid=0
+    sample_complete=0
+    sample_rating="unavailable"
+    bandwidth_metrics=$(< "$bandwidth_metrics_file")
+    if [ -n "$bandwidth_metrics" ]; then
+      IFS="$TAB" read -r sample_code sample_bytes sample_speed <<EOF
 $bandwidth_metrics
 EOF
-    case "$bandwidth_code" in
-      2[0-9][0-9])
-        if awk -v bytes="$bandwidth_bytes" -v speed="$bandwidth_speed" 'BEGIN { exit !(bytes >= 65536 && speed > 0) }'; then
-          bandwidth_valid=1
-          [ "$bandwidth_exit" -ne 0 ] || bandwidth_complete=true
-        fi
-        ;;
-    esac
+      case "$sample_code" in
+        2[0-9][0-9])
+          if awk -v bytes="$sample_bytes" -v speed="$sample_speed" 'BEGIN { exit !(bytes >= 32768 && speed > 0) }'; then
+            sample_valid=1
+            sample_rating=$(bandwidth_rating download "$sample_speed")
+            if [ "$sample_exit" -eq 0 ] && awk -v bytes="$sample_bytes" -v expected="$expected_bytes" 'BEGIN { exit !(bytes >= expected) }'; then
+              sample_complete=1
+            fi
+          fi
+          ;;
+      esac
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$expected_bytes" "$sample_exit" "$sample_code" "$sample_bytes" "$sample_speed" \
+      "$sample_valid" "$sample_complete" "$sample_rating" >> "$bandwidth_samples_file"
+  done
+  bandwidth_summary=$(awk -F '\t' '
+    $3 != "000" && observed_code == "" { observed_code = $3 }
+    $6 == 1 {
+      if (code == "") code = $3
+      valid++
+      bytes += $4
+      speed += $5
+      if ($8 == "severe") severe++
+      if ($8 == "severe" || $8 == "slow") constrained++
+    }
+    $7 == 1 { complete++ }
+    $2 == 28 { timed_out++ }
+    END {
+      if (code == "") code = observed_code
+      if (code == "") code = "000"
+      average = valid ? speed / valid : 0
+      print code "\t" bytes + 0 "\t" average + 0 "\t" valid + 0 "\t" complete + 0 \
+        "\t" (valid >= 2 && severe == valid ? 1 : 0) \
+        "\t" (valid >= 2 && constrained == valid ? 1 : 0) \
+        "\t" timed_out + 0
+    }' "$bandwidth_samples_file")
+  IFS="$TAB" read -r bandwidth_code bandwidth_bytes bandwidth_speed bandwidth_sample_count \
+    bandwidth_complete_count download_confirmed_severe download_confirmed_constrained \
+    bandwidth_timeout_count <<EOF
+$bandwidth_summary
+EOF
+  if [ "$bandwidth_sample_count" -gt 0 ]; then
+    bandwidth_valid=1
+    download_speed_rating=$(bandwidth_rating download "$bandwidth_speed")
+    download_rating="$download_speed_rating"
+    download_sample_state="partial"
+    if [ "$bandwidth_complete_count" -eq "$TRANSFER_SAMPLE_TOTAL" ]; then
+      bandwidth_complete=true
+      download_sample_state="complete"
+    fi
   fi
   if [ "$bandwidth_valid" -eq 0 ]; then
     bandwidth_bytes=0
     bandwidth_speed=0
   fi
   if [ "$bandwidth_valid" -eq 1 ]; then
-    download_speed_rating=$(bandwidth_rating download "$bandwidth_speed")
-    download_rating="$download_speed_rating"
-    [ "$bandwidth_complete" = true ] || download_rating="partial"
     if [ "$UI_LANG" = "zh" ]; then
-      download_progress="下载 $(format_mbps "$bandwidth_speed")（$(localized_bandwidth_rating "$download_rating")）"
+      download_progress="下行 $(format_mbps "$bandwidth_speed")（$(localized_bandwidth_rating "$download_rating")，有效 ${bandwidth_sample_count}/${TRANSFER_SAMPLE_TOTAL}）"
     else
-      download_progress="download $(format_mbps "$bandwidth_speed") ($(localized_bandwidth_rating "$download_rating"))"
+      download_progress="download $(format_mbps "$bandwidth_speed") ($(localized_bandwidth_rating "$download_rating"), valid $bandwidth_sample_count/$TRANSFER_SAMPLE_TOTAL)"
     fi
-    if [ "$download_rating" = "slow" ] || [ "$download_rating" = "partial" ]; then progress_finish warn "Cloudflare" "$download_progress"; else progress_finish ok "Cloudflare" "$download_progress"; fi
+    if [ "$download_rating" = "fast" ] && [ "$download_sample_state" = "complete" ]; then progress_finish ok "Cloudflare" "$download_progress"; else progress_finish warn "Cloudflare" "$download_progress"; fi
   elif [ "$UI_LANG" = "zh" ]; then
     progress_finish warn "Cloudflare" "参考传输样本不可用"
   else
@@ -1182,54 +1261,111 @@ upload_code=000
 upload_valid=0
 upload_bytes=0
 upload_complete=false
+upload_sample_count=0
+upload_complete_count=0
+upload_timeout_count=0
+upload_confirmed_severe=0
+upload_confirmed_constrained=0
+upload_sample_state="unavailable"
 upload_rating="unavailable"
 upload_speed_rating="unavailable"
 if [ "$RUN_UPLOAD" -eq 1 ]; then
   if [ "$UI_LANG" = "zh" ]; then
-    progress_note "●" "正在测试代理链路上行样本（1 MB 零字节）…"
+    progress_note "●" "正在测试代理链路上行（2 个不同大小的零字节样本，最大 1 MB）…"
   else
-    progress_note "●" "Testing proxy-path upload sample (1 MB of zero bytes)…"
+    progress_note "●" "Testing proxy-path upload (2 differently sized zero-filled samples, up to 1 MB)…"
   fi
-  upload_file="$WORK_DIR/upload.bin"
-  if head -c "$UPLOAD_BYTES" /dev/zero > "$upload_file" 2>/dev/null; then
-    upload_metrics_file="$WORK_DIR/upload-metrics.txt"
-    curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
-      -A "ipcheck/$VERSION" -X POST -H 'content-type: application/octet-stream' -H 'Expect:' \
-      --data-binary "@$upload_file" \
-      --connect-timeout "$TIMEOUT" --max-time "$TIMEOUT" \
-      -w '%{http_code}\t%{size_upload}\t%{speed_upload}' \
-      --url "$UPLOAD_URL" > "$upload_metrics_file" 2>/dev/null
-    upload_exit=$?
-    upload_metrics=$(< "$upload_metrics_file")
-    if [ -n "$upload_metrics" ]; then
-      IFS="$TAB" read -r upload_code upload_bytes upload_speed <<EOF
+  upload_samples_file="$WORK_DIR/upload-samples.tsv"
+  : > "$upload_samples_file"
+  upload_index=0
+  for expected_bytes in $UPLOAD_SAMPLE_BYTES; do
+    upload_index=$((upload_index + 1))
+    upload_file="$WORK_DIR/upload-${expected_bytes}.bin"
+    sample_exit=1
+    sample_code=000
+    sample_bytes=0
+    sample_speed=0
+    sample_valid=0
+    sample_complete=0
+    sample_rating="unavailable"
+    if head -c "$expected_bytes" /dev/zero > "$upload_file" 2>/dev/null; then
+      upload_metrics_file="$WORK_DIR/upload-metrics-$upload_index.txt"
+      curl_for_service "custom" --proto '=https' --http1.1 -sS -o /dev/null \
+        -A "ipcheck/$VERSION" -X POST -H 'content-type: application/octet-stream' -H 'Expect:' \
+        --data-binary "@$upload_file" \
+        --connect-timeout "$TRANSFER_TIMEOUT" --max-time "$TRANSFER_TIMEOUT" \
+        -w '%{http_code}\t%{size_upload}\t%{speed_upload}' \
+        --url "$UPLOAD_URL" > "$upload_metrics_file" 2>/dev/null
+      sample_exit=$?
+      upload_metrics=$(< "$upload_metrics_file")
+      if [ -n "$upload_metrics" ]; then
+        IFS="$TAB" read -r sample_code sample_bytes sample_speed <<EOF
 $upload_metrics
 EOF
-      case "$upload_code" in
-        2[0-9][0-9])
-          if awk -v bytes="$upload_bytes" -v speed="$upload_speed" 'BEGIN { exit !(bytes >= 65536 && speed > 0) }'; then
-            upload_valid=1
-            [ "$upload_exit" -ne 0 ] || upload_complete=true
-          fi
-          ;;
-      esac
+        case "$sample_code" in
+          2[0-9][0-9])
+            if awk -v bytes="$sample_bytes" -v speed="$sample_speed" 'BEGIN { exit !(bytes >= 32768 && speed > 0) }'; then
+              sample_valid=1
+              sample_rating=$(bandwidth_rating upload "$sample_speed")
+              if [ "$sample_exit" -eq 0 ] && awk -v bytes="$sample_bytes" -v expected="$expected_bytes" 'BEGIN { exit !(bytes >= expected) }'; then
+                sample_complete=1
+              fi
+            fi
+            ;;
+        esac
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$expected_bytes" "$sample_exit" "$sample_code" "$sample_bytes" "$sample_speed" \
+      "$sample_valid" "$sample_complete" "$sample_rating" >> "$upload_samples_file"
+  done
+  upload_summary=$(awk -F '\t' '
+    $3 != "000" && observed_code == "" { observed_code = $3 }
+    $6 == 1 {
+      if (code == "") code = $3
+      valid++
+      bytes += $4
+      speed += $5
+      if ($8 == "severe") severe++
+      if ($8 == "severe" || $8 == "slow") constrained++
+    }
+    $7 == 1 { complete++ }
+    $2 == 28 { timed_out++ }
+    END {
+      if (code == "") code = observed_code
+      if (code == "") code = "000"
+      average = valid ? speed / valid : 0
+      print code "\t" bytes + 0 "\t" average + 0 "\t" valid + 0 "\t" complete + 0 \
+        "\t" (valid >= 2 && severe == valid ? 1 : 0) \
+        "\t" (valid >= 2 && constrained == valid ? 1 : 0) \
+        "\t" timed_out + 0
+    }' "$upload_samples_file")
+  IFS="$TAB" read -r upload_code upload_bytes upload_speed upload_sample_count \
+    upload_complete_count upload_confirmed_severe upload_confirmed_constrained \
+    upload_timeout_count <<EOF
+$upload_summary
+EOF
+  if [ "$upload_sample_count" -gt 0 ]; then
+    upload_valid=1
+    upload_speed_rating=$(bandwidth_rating upload "$upload_speed")
+    upload_rating="$upload_speed_rating"
+    upload_sample_state="partial"
+    if [ "$upload_complete_count" -eq "$TRANSFER_SAMPLE_TOTAL" ]; then
+      upload_complete=true
+      upload_sample_state="complete"
     fi
   fi
   if [ "$upload_valid" -eq 0 ]; then
     upload_bytes=0
     upload_speed=0
-  else
-    upload_speed_rating=$(bandwidth_rating upload "$upload_speed")
-    upload_rating="$upload_speed_rating"
-    [ "$upload_complete" = true ] || upload_rating="partial"
   fi
   if [ "$upload_valid" -eq 1 ]; then
     if [ "$UI_LANG" = "zh" ]; then
-      upload_progress="上传 $(format_mbps "$upload_speed")（$(localized_bandwidth_rating "$upload_rating")）"
+      upload_progress="上行 $(format_mbps "$upload_speed")（$(localized_bandwidth_rating "$upload_rating")，有效 ${upload_sample_count}/${TRANSFER_SAMPLE_TOTAL}）"
     else
-      upload_progress="upload $(format_mbps "$upload_speed") ($(localized_bandwidth_rating "$upload_rating"))"
+      upload_progress="upload $(format_mbps "$upload_speed") ($(localized_bandwidth_rating "$upload_rating"), valid $upload_sample_count/$TRANSFER_SAMPLE_TOTAL)"
     fi
-    if [ "$upload_rating" = "slow" ] || [ "$upload_rating" = "partial" ]; then progress_finish warn "Cloudflare" "$upload_progress"; else progress_finish ok "Cloudflare" "$upload_progress"; fi
+    if [ "$upload_rating" = "fast" ] && [ "$upload_sample_state" = "complete" ]; then progress_finish ok "Cloudflare" "$upload_progress"; else progress_finish warn "Cloudflare" "$upload_progress"; fi
   elif [ "$UI_LANG" = "zh" ]; then
     progress_finish warn "Cloudflare" "参考上传测试不可用"
   else
@@ -1240,14 +1376,14 @@ fi
 download_mbps=$(awk -v value="$bandwidth_speed" 'BEGIN { printf "%.1f", value * 8 / 1000000 }')
 upload_mbps=$(awk -v value="$upload_speed" 'BEGIN { printf "%.1f", value * 8 / 1000000 }')
 
-# Preserve the pre-v0.5 top-level bandwidth fields: a curl failure never
-# exposed partial transfer data there. Partial estimates live only in the new
-# bandwidth.download object.
+# Preserve the observed HTTP status in the pre-v0.5 top-level bandwidth fields,
+# but expose bytes/speed only for a complete transfer. Partial estimates live
+# only in the nested bandwidth.download object.
 legacy_bandwidth_available=false
 legacy_bandwidth_code=000
 legacy_bandwidth_bytes=0
 legacy_bandwidth_speed=0
-if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_exit" -eq 0 ]; then
+if [ "$RUN_BANDWIDTH" -eq 1 ]; then
   legacy_bandwidth_code="$bandwidth_code"
   if [ "$bandwidth_valid" -eq 1 ] && [ "$bandwidth_complete" = true ]; then
     legacy_bandwidth_available=true
@@ -1259,36 +1395,60 @@ fi
 if [ "$UI_LANG" = "zh" ]; then
   if [ "$bandwidth_valid" -eq 0 ] && [ "$upload_valid" -eq 0 ]; then
     bandwidth_advice="未获得有效参考样本，不能据此判断当前代理链路的传输表现。"
+  elif [ "$download_confirmed_severe" -eq 1 ] || [ "$upload_confirmed_severe" -eq 1 ]; then
+    bandwidth_advice="多样本显示代理链路传输严重受限；大型上下文、仓库和依赖传输会明显受影响。"
+    if { [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_complete" = false ]; } || { [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_complete" = false ]; }; then
+      bandwidth_advice="$bandwidth_advice 部分方向不可用或未完成，整体可信度较低。"
+    fi
+  elif [ "$download_confirmed_constrained" -eq 1 ] || [ "$upload_confirmed_constrained" -eq 1 ]; then
+    bandwidth_advice="多样本显示代理链路传输明显受限；轻量交互可用，大型工程传输可能需要较长等待。"
+    if { [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_complete" = false ]; } || { [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_complete" = false ]; }; then
+      bandwidth_advice="$bandwidth_advice 部分方向不可用或未完成，整体可信度较低。"
+    fi
+  elif [ "$download_rating" = "severe" ] || [ "$upload_rating" = "severe" ]; then
+    bandwidth_advice="有效样本的平均速率严重受限，但样本结果不完整或存在差异；建议切换节点后复测。"
+  elif [ "$download_rating" = "slow" ] || [ "$upload_rating" = "slow" ]; then
+    bandwidth_advice="有效样本的平均速率明显受限，但样本证据不完整或各次结果不一致；建议结合实际任务复测。"
   elif { [ "$bandwidth_valid" -eq 1 ] && [ "$bandwidth_complete" = false ]; } || { [ "$upload_valid" -eq 1 ] && [ "$upload_complete" = false ]; }; then
-    bandwidth_advice="传输在达到时间上限前未完成；显示值仅为部分样本估算，不能据此认定链路吞吐充足。"
+    if [ "$bandwidth_timeout_count" -gt 0 ] || [ "$upload_timeout_count" -gt 0 ]; then
+      bandwidth_advice="至少一个传输样本在时间上限前未完成；显示值仅为部分样本估算，不能据此认定链路吞吐充足。"
+    else
+      bandwidth_advice="至少一个传输样本失败或无效；显示值仅依据其余有效样本，可信度较低。"
+    fi
   elif [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 0 ]; then
     bandwidth_advice="下行样本不可用；当前提示仅依据上行样本。"
   elif [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_valid" -eq 0 ]; then
     bandwidth_advice="上行样本不可用；当前提示仅依据下行样本。"
-  elif [ "$download_rating" = "slow" ] && [ "$upload_rating" = "slow" ]; then
-    bandwidth_advice="Cloudflare 上下行小文件样本都偏低，可能表示代理链路吞吐受限；请用目标服务或专用测速复核。"
-  elif [ "$download_rating" = "slow" ]; then
-    bandwidth_advice="Cloudflare 下行小文件样本偏低，可能表示代理链路吞吐受限；请用目标服务或专用测速复核。"
-  elif [ "$upload_rating" = "slow" ]; then
-    bandwidth_advice="Cloudflare 上行小文件样本偏低，可能表示代理链路吞吐受限；请用目标服务或专用测速复核。"
   else
     bandwidth_advice="样本未显示明显的代理链路传输瓶颈；AI 交互体验仍主要取决于真实服务延迟。"
   fi
 else
   if [ "$bandwidth_valid" -eq 0 ] && [ "$upload_valid" -eq 0 ]; then
     bandwidth_advice="No valid reference sample was collected, so the current proxy path's transfer performance cannot be assessed."
+  elif [ "$download_confirmed_severe" -eq 1 ] || [ "$upload_confirmed_severe" -eq 1 ]; then
+    bandwidth_advice="Multiple samples show severely constrained proxy transfers; large contexts, repositories, and dependency transfers will be affected."
+    if { [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_complete" = false ]; } || { [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_complete" = false ]; }; then
+      bandwidth_advice="$bandwidth_advice Some directions are unavailable or incomplete, so overall confidence is lower."
+    fi
+  elif [ "$download_confirmed_constrained" -eq 1 ] || [ "$upload_confirmed_constrained" -eq 1 ]; then
+    bandwidth_advice="Multiple samples show constrained proxy transfers; light interaction is usable, but large engineering transfers may take noticeably longer."
+    if { [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_complete" = false ]; } || { [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_complete" = false ]; }; then
+      bandwidth_advice="$bandwidth_advice Some directions are unavailable or incomplete, so overall confidence is lower."
+    fi
+  elif [ "$download_rating" = "severe" ] || [ "$upload_rating" = "severe" ]; then
+    bandwidth_advice="Valid samples average severely constrained, but the evidence is incomplete or mixed; switch routes and test again."
+  elif [ "$download_rating" = "slow" ] || [ "$upload_rating" = "slow" ]; then
+    bandwidth_advice="Valid samples average constrained, but the evidence is incomplete or individual results are mixed; verify with the intended workload."
   elif { [ "$bandwidth_valid" -eq 1 ] && [ "$bandwidth_complete" = false ]; } || { [ "$upload_valid" -eq 1 ] && [ "$upload_complete" = false ]; }; then
-    bandwidth_advice="The transfer did not finish before its time limit; shown rates are partial estimates and do not prove that path throughput is sufficient."
+    if [ "$bandwidth_timeout_count" -gt 0 ] || [ "$upload_timeout_count" -gt 0 ]; then
+      bandwidth_advice="At least one transfer sample did not finish before its time limit; shown rates are partial estimates and do not prove that path throughput is sufficient."
+    else
+      bandwidth_advice="At least one transfer sample failed or was invalid; the shown rate uses only the remaining valid samples and has lower confidence."
+    fi
   elif [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 0 ]; then
     bandwidth_advice="The download sample was unavailable; this note is based on the upload sample only."
   elif [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_valid" -eq 0 ]; then
     bandwidth_advice="The upload sample was unavailable; this note is based on the download sample only."
-  elif [ "$download_rating" = "slow" ] && [ "$upload_rating" = "slow" ]; then
-    bandwidth_advice="Both Cloudflare small-transfer samples are low, which may indicate constrained proxy throughput; verify against the target service or a dedicated speed test."
-  elif [ "$download_rating" = "slow" ]; then
-    bandwidth_advice="The Cloudflare download sample is low, which may indicate constrained proxy throughput; verify against the target service or a dedicated speed test."
-  elif [ "$upload_rating" = "slow" ]; then
-    bandwidth_advice="The Cloudflare upload sample is low, which may indicate constrained proxy throughput; verify against the target service or a dedicated speed test."
   else
     bandwidth_advice="The samples show no obvious proxy-path transfer bottleneck; real service latency remains the main interactive factor."
   fi
@@ -1535,19 +1695,19 @@ case "$overall" in
     ;;
 esac
 
-# Rule v3 is a transparent heuristic, not a user percentile. The worst client
-# service path contributes up to 100 points: reachability 40, median TTFB 40,
-# P95 10, and jitter 10. Capped Cloudflare transfers never add points because
-# they do not represent peak bandwidth or AI API throughput. Low complete
-# samples deduct two points per direction; incomplete samples deduct one.
+# Rule v4 is a transparent heuristic, not a user percentile. The worst client
+# service path contributes up to 80 points: reachability 30, median TTFB 30,
+# P95 10, and jitter 10. Multi-size Cloudflare transfers contribute up to 20
+# engineering-transfer points. Confirmed constrained or severe throughput also
+# caps the total so an excellent TTFB cannot hide an unusably slow data path.
 score_latency_points() {
   awk -v value="$1" 'BEGIN {
     if (value <= 0) print 0
-    else if (value < 800) print 40
-    else if (value < 1500) print 34
-    else if (value < 3000) print 25
-    else if (value < 5000) print 16
-    else print 7
+    else if (value < 800) print 30
+    else if (value < 1500) print 26
+    else if (value < 3000) print 19
+    else if (value < 5000) print 12
+    else print 5
   }'
 }
 
@@ -1573,8 +1733,11 @@ score_jitter_points() {
 
 score_reference_transfer_points() {
   case "$1" in
-    slow) printf -- -2 ;;
-    *) printf 0 ;;
+    fast) printf 10 ;;
+    adequate) printf 7 ;;
+    slow) printf 4 ;;
+    severe) printf 0 ;;
+    *) printf 10 ;;
   esac
 }
 
@@ -1603,11 +1766,11 @@ while IFS="$TAB" read -r service result reason success_rate ttfb jitter service_
   if [ "$result" = "blocked" ]; then
     availability_points=0
   elif [ "$success_rate" -ge 100 ]; then
-    availability_points=40
+    availability_points=30
   elif [ "$success_rate" -ge 60 ]; then
-    availability_points=25
+    availability_points=19
   elif [ "$success_rate" -gt 0 ]; then
-    availability_points=11
+    availability_points=8
   else
     availability_points=0
   fi
@@ -1657,26 +1820,92 @@ download_speed_points=$(score_reference_transfer_points "$download_speed_rating"
 upload_speed_points=$(score_reference_transfer_points "$upload_speed_rating")
 download_partial_penalty=0
 upload_partial_penalty=0
-[ "$download_rating" != "partial" ] || {
-  download_speed_points=0
-  download_partial_penalty=-1
-}
-[ "$upload_rating" != "partial" ] || {
-  upload_speed_points=0
-  upload_partial_penalty=-1
-}
-download_score=$((download_speed_points + download_partial_penalty))
-upload_score=$((upload_speed_points + upload_partial_penalty))
+download_score="$download_speed_points"
+upload_score="$upload_speed_points"
+transfer_score=$((download_score + upload_score))
+
+transfer_expected_directions=$((RUN_BANDWIDTH + RUN_UPLOAD))
+download_samples_total=0
+upload_samples_total=0
+[ "$RUN_BANDWIDTH" -eq 0 ] || download_samples_total="$TRANSFER_SAMPLE_TOTAL"
+[ "$RUN_UPLOAD" -eq 0 ] || upload_samples_total="$TRANSFER_SAMPLE_TOTAL"
+transfer_valid_directions=0
+transfer_complete_directions=0
+[ "$bandwidth_valid" -eq 0 ] || transfer_valid_directions=$((transfer_valid_directions + 1))
+[ "$upload_valid" -eq 0 ] || transfer_valid_directions=$((transfer_valid_directions + 1))
+[ "$bandwidth_complete" = false ] || transfer_complete_directions=$((transfer_complete_directions + 1))
+[ "$upload_complete" = false ] || transfer_complete_directions=$((transfer_complete_directions + 1))
+
+if [ "$transfer_expected_directions" -eq 0 ]; then
+  transfer_confidence="unmeasured"
+elif [ "$transfer_valid_directions" -eq 0 ]; then
+  transfer_confidence="unavailable"
+elif [ "$transfer_valid_directions" -eq "$transfer_expected_directions" ] && \
+     [ "$transfer_complete_directions" -eq "$transfer_expected_directions" ]; then
+  transfer_confidence="high"
+elif [ "$transfer_valid_directions" -eq "$transfer_expected_directions" ]; then
+  transfer_confidence="medium"
+else
+  transfer_confidence="low"
+fi
+
+if [ "$overall" = "unavailable" ]; then
+  interaction_score_label_en="UNMEASURED"
+  interaction_score_label_zh="未测量"
+elif [ "$score_service_path" -ge 72 ]; then
+  interaction_score_label_en="COMFORTABLE"
+  interaction_score_label_zh="舒适"
+elif [ "$score_service_path" -ge 60 ]; then
+  interaction_score_label_en="GOOD"
+  interaction_score_label_zh="良好"
+elif [ "$score_service_path" -ge 52 ]; then
+  interaction_score_label_en="USABLE"
+  interaction_score_label_zh="可用"
+else
+  interaction_score_label_en="LIMITED"
+  interaction_score_label_zh="受限"
+fi
+
+if [ "$transfer_expected_directions" -eq 0 ] || [ "$transfer_valid_directions" -eq 0 ]; then
+  transfer_score_label_en="UNMEASURED"
+  transfer_score_label_zh="未测量"
+elif [ "$transfer_score" -ge 18 ]; then
+  transfer_score_label_en="COMFORTABLE"
+  transfer_score_label_zh="舒适"
+elif [ "$transfer_score" -ge 15 ]; then
+  transfer_score_label_en="GOOD"
+  transfer_score_label_zh="良好"
+elif [ "$transfer_score" -ge 13 ]; then
+  transfer_score_label_en="USABLE"
+  transfer_score_label_zh="可用"
+else
+  transfer_score_label_en="LIMITED"
+  transfer_score_label_zh="受限"
+fi
+
 readiness_score_before_cap=$((score_service_path + download_score + upload_score))
 
 case "$score_service_result" in
-  good) readiness_score_cap=100 ;;
+  good) service_verdict_cap=100 ;;
   fair)
-    if [ "$score_service_usable" -gt 0 ]; then readiness_score_cap=89; else readiness_score_cap=64; fi
+    if [ "$score_service_usable" -gt 0 ]; then service_verdict_cap=89; else service_verdict_cap=64; fi
     ;;
-  poor) readiness_score_cap=64 ;;
-  *) readiness_score_cap=0 ;;
+  poor) service_verdict_cap=64 ;;
+  *) service_verdict_cap=0 ;;
 esac
+
+transfer_verdict_cap=100
+if [ "$download_confirmed_severe" -eq 1 ] || [ "$upload_confirmed_severe" -eq 1 ]; then
+  transfer_verdict_cap=74
+elif [ "$download_confirmed_constrained" -eq 1 ] || [ "$upload_confirmed_constrained" -eq 1 ]; then
+  transfer_verdict_cap=79
+elif { [ "$bandwidth_valid" -eq 1 ] && [ "$download_speed_rating" = "severe" ]; } || \
+     { [ "$upload_valid" -eq 1 ] && [ "$upload_speed_rating" = "severe" ]; }; then
+  transfer_verdict_cap=89
+fi
+
+readiness_score_cap="$service_verdict_cap"
+[ "$transfer_verdict_cap" -ge "$readiness_score_cap" ] || readiness_score_cap="$transfer_verdict_cap"
 readiness_score="$readiness_score_before_cap"
 [ "$readiness_score" -le "$readiness_score_cap" ] || readiness_score="$readiness_score_cap"
 [ "$readiness_score" -ge 0 ] || readiness_score=0
@@ -1694,6 +1923,29 @@ else
   readiness_score_label_en="LIMITED"
   readiness_score_label_zh="受限"
 fi
+
+if [ "$service_verdict_cap" -gt "$transfer_verdict_cap" ]; then
+  if [ "$transfer_verdict_cap" -le 74 ]; then
+    readiness_ready=false
+    readiness_level="transfer_limited"
+    readiness_answer_en="LIGHT TASKS ONLY"
+    readiness_summary_en="AI interaction is responsive, but confirmed transfer throughput is severely constrained."
+    readiness_recommendation_en="Use light interactive tasks only, or switch proxy routes before sending large contexts and installing dependencies."
+    readiness_answer_zh="仅适合轻量任务"
+    readiness_summary_zh="AI 交互响应尚可，但已确认的工程传输吞吐严重受限。"
+    readiness_recommendation_zh="建议仅进行轻量交互；发送大型上下文或安装依赖前，请先切换代理节点。"
+  elif [ "$transfer_verdict_cap" -le 79 ]; then
+    readiness_ready=true
+    readiness_level="with_caution"
+    readiness_answer_en="YES, WITH LIMITS"
+    readiness_summary_en="AI interaction is usable, but engineering transfers are noticeably constrained."
+    readiness_recommendation_en="Small edits are practical; switch routes before large context uploads, clones, or dependency installs."
+    readiness_answer_zh="有限适合"
+    readiness_summary_zh="AI 交互可以使用，但工程传输速度存在明显限制。"
+    readiness_recommendation_zh="小型修改可以进行；上传大型上下文、克隆仓库或安装依赖前建议切换节点。"
+  fi
+fi
+
 if [ "$overall" = "unavailable" ]; then
   readiness_score_label_en="UNAVAILABLE"
   readiness_score_label_zh="未测量"
@@ -1739,10 +1991,6 @@ section_title() {
   printf '\n%s%s◆%s %s%s%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"
 }
 
-signed_points() {
-  if [ "$1" -gt 0 ]; then printf '+%s' "$1"; else printf '%s' "$1"; fi
-}
-
 score_bar() {
   bar_width=20
   [ "$COMPACT_UI" -eq 0 ] || bar_width=14
@@ -1777,7 +2025,7 @@ localized_service_result() {
 render_primary_diagnosis() {
   [ "$overall" != "unavailable" ] || return 0
   diagnosis_count=0
-  if [ "$score_availability" -lt 40 ]; then
+  if [ "$score_availability" -lt 30 ]; then
     diagnosis_count=$((diagnosis_count + 1))
     if [ "$UI_LANG" = "zh" ]; then
       printf '  %s!%s 链路可达率只有 %s%%，请求可能中断。\n' "$C_YELLOW" "$C_RESET" "$score_success_rate"
@@ -1809,16 +2057,18 @@ render_score_breakdown() {
   upload_score_label=$(localized_bandwidth_rating "$upload_speed_rating")
   if [ "$UI_LANG" = "zh" ]; then
     printf '  %s评分构成%s\n' "$C_BOLD" "$C_RESET"
-    printf '    服务链路    %3s/100  可达性 %s · TTFB %s · P95 %s · 抖动 %s\n' "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter"
-    printf '    下行参考样本 %3s    %s · %s%s\n' "$(signed_points "$download_score")" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$(partial_sample_note "$download_rating" human)"
-    printf '    上行参考样本 %3s    %s · %s%s\n' "$(signed_points "$upload_score")" "$(format_mbps "$upload_speed")" "$upload_score_label" "$(partial_sample_note "$upload_rating" human)"
-    [ "$readiness_score_before_cap" -le "$readiness_score_cap" ] || printf '    结论限幅         %s → %s\n' "$readiness_score_before_cap" "$readiness_score_cap"
+    printf '    AI 交互       %2s/80  可达性 %s · TTFB %s · P95 %s · 抖动 %s\n' "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter"
+    printf '    下行工程传输   %2s/10  %s · %s%s\n' "$download_score" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$(partial_sample_note "$download_sample_state" human)"
+    printf '    上行工程传输   %2s/10  %s · %s%s\n' "$upload_score" "$(format_mbps "$upload_speed")" "$upload_score_label" "$(partial_sample_note "$upload_sample_state" human)"
+    printf '    传输可信度            %s\n' "$(localized_transfer_confidence "$transfer_confidence")"
+    [ "$readiness_score_before_cap" -le "$readiness_score_cap" ] || printf '    综合限幅              %s → %s（服务上限 %s · 传输上限 %s）\n' "$readiness_score_before_cap" "$readiness_score_cap" "$service_verdict_cap" "$transfer_verdict_cap"
   else
     printf '  %sScore breakdown%s\n' "$C_BOLD" "$C_RESET"
-    printf '    Service path       %3s/100  reachability %s · TTFB %s · P95 %s · jitter %s\n' "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter"
-    printf '    Download reference %3s    %s · %s%s\n' "$(signed_points "$download_score")" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$(partial_sample_note "$download_rating" human)"
-    printf '    Upload reference   %3s    %s · %s%s\n' "$(signed_points "$upload_score")" "$(format_mbps "$upload_speed")" "$upload_score_label" "$(partial_sample_note "$upload_rating" human)"
-    [ "$readiness_score_before_cap" -le "$readiness_score_cap" ] || printf '    Verdict cap          %s → %s\n' "$readiness_score_before_cap" "$readiness_score_cap"
+    printf '    AI interaction       %2s/80  reachability %s · TTFB %s · P95 %s · jitter %s\n' "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter"
+    printf '    Download engineering %2s/10  %s · %s%s\n' "$download_score" "$(format_mbps "$bandwidth_speed")" "$download_score_label" "$(partial_sample_note "$download_sample_state" human)"
+    printf '    Upload engineering   %2s/10  %s · %s%s\n' "$upload_score" "$(format_mbps "$upload_speed")" "$upload_score_label" "$(partial_sample_note "$upload_sample_state" human)"
+    printf '    Transfer confidence          %s\n' "$(localized_transfer_confidence "$transfer_confidence")"
+    [ "$readiness_score_before_cap" -le "$readiness_score_cap" ] || printf '    Combined cap                 %s → %s (service %s · transfer %s)\n' "$readiness_score_before_cap" "$readiness_score_cap" "$service_verdict_cap" "$transfer_verdict_cap"
   fi
 }
 
@@ -1840,6 +2090,7 @@ render_human() {
     fair|unavailable) verdict_color="$C_YELLOW" ;;
     *) verdict_color="$C_RED" ;;
   esac
+  [ "$transfer_verdict_cap" -ge 80 ] || verdict_color="$C_YELLOW"
 
   if [ "$UI_LANG" = "zh" ]; then
     printf '%s%sipcheck v%s%s  %sAI 编程网络体检%s\n' "$C_BOLD" "$C_CYAN" "$VERSION" "$C_RESET" "$C_BOLD" "$C_RESET"
@@ -1869,6 +2120,15 @@ render_human() {
       score_bar
       printf '  %s\n' "$readiness_score_label"
     fi
+  fi
+  if [ "$UI_LANG" = "zh" ]; then
+    printf '  %sAI 交互%s %s/80 · %s  %s工程传输%s %s/20 · %s · 可信度%s\n' \
+      "$C_DIM" "$C_RESET" "$score_service_path" "$interaction_score_label_zh" \
+      "$C_DIM" "$C_RESET" "$transfer_score" "$transfer_score_label_zh" "$(localized_transfer_confidence "$transfer_confidence")"
+  else
+    printf '  %sAI interaction%s %s/80 · %s  %sEngineering transfer%s %s/20 · %s · confidence %s\n' \
+      "$C_DIM" "$C_RESET" "$score_service_path" "$interaction_score_label_en" \
+      "$C_DIM" "$C_RESET" "$transfer_score" "$transfer_score_label_en" "$(localized_transfer_confidence "$transfer_confidence")"
   fi
   printf '\n  %s%s%s\n  %s\n' "$verdict_color" "$readiness_summary" "$C_RESET" "$readiness_recommendation"
   render_primary_diagnosis
@@ -1963,23 +2223,24 @@ EOF
   fi
 
   if [ "$UI_LANG" = "zh" ]; then section_title "代理链路参考传输"; else section_title "Proxy-path reference transfer"; fi
-  case "$download_rating" in fast) download_color="$C_GREEN" ;; adequate|partial) download_color="$C_YELLOW" ;; *) download_color="$C_RED" ;; esac
-  case "$upload_rating" in fast) upload_color="$C_GREEN" ;; adequate|partial) upload_color="$C_YELLOW" ;; *) upload_color="$C_RED" ;; esac
+  case "$download_rating" in fast) download_color="$C_GREEN" ;; adequate|slow) download_color="$C_YELLOW" ;; *) download_color="$C_RED" ;; esac
+  case "$upload_rating" in fast) upload_color="$C_GREEN" ;; adequate|slow) upload_color="$C_YELLOW" ;; *) upload_color="$C_RED" ;; esac
   if [ "$RUN_BANDWIDTH" -eq 1 ] && [ "$bandwidth_valid" -eq 1 ]; then
-    if [ "$UI_LANG" = "zh" ]; then printf '  下行样本  %-12s %s%s%s  Cloudflare，最多 2 MB\n' "$(format_mbps "$bandwidth_speed")" "$download_color" "$(localized_bandwidth_rating "$download_rating")" "$C_RESET"; else printf '  Down sample  %-12s %s%s%s  Cloudflare, up to 2 MB\n' "$(format_mbps "$bandwidth_speed")" "$download_color" "$(localized_bandwidth_rating "$download_rating")" "$C_RESET"; fi
+    if [ "$UI_LANG" = "zh" ]; then printf '  下行样本  %-12s %s%s%s  Cloudflare，%s/%s 有效，最大 2 MB\n' "$(format_mbps "$bandwidth_speed")" "$download_color" "$(localized_bandwidth_rating "$download_rating")" "$C_RESET" "$bandwidth_sample_count" "$TRANSFER_SAMPLE_TOTAL"; else printf '  Down sample  %-12s %s%s%s  Cloudflare, %s/%s valid, up to 2 MB\n' "$(format_mbps "$bandwidth_speed")" "$download_color" "$(localized_bandwidth_rating "$download_rating")" "$C_RESET" "$bandwidth_sample_count" "$TRANSFER_SAMPLE_TOTAL"; fi
   elif [ "$RUN_BANDWIDTH" -eq 1 ]; then
     if [ "$UI_LANG" = "zh" ]; then printf '  下行样本  不可用\n'; else printf '  Down sample  unavailable\n'; fi
   else
     if [ "$UI_LANG" = "zh" ]; then printf '  下行样本  已跳过\n'; else printf '  Down sample  skipped\n'; fi
   fi
   if [ "$RUN_UPLOAD" -eq 1 ] && [ "$upload_valid" -eq 1 ]; then
-    if [ "$UI_LANG" = "zh" ]; then printf '  上行样本  %-12s %s%s%s  Cloudflare，最多 1 MB 零字节\n' "$(format_mbps "$upload_speed")" "$upload_color" "$(localized_bandwidth_rating "$upload_rating")" "$C_RESET"; else printf '  Up sample    %-12s %s%s%s  Cloudflare, up to 1 MB zero-filled\n' "$(format_mbps "$upload_speed")" "$upload_color" "$(localized_bandwidth_rating "$upload_rating")" "$C_RESET"; fi
+    if [ "$UI_LANG" = "zh" ]; then printf '  上行样本  %-12s %s%s%s  Cloudflare，%s/%s 有效，最大 1 MB 零字节\n' "$(format_mbps "$upload_speed")" "$upload_color" "$(localized_bandwidth_rating "$upload_rating")" "$C_RESET" "$upload_sample_count" "$TRANSFER_SAMPLE_TOTAL"; else printf '  Up sample    %-12s %s%s%s  Cloudflare, %s/%s valid, up to 1 MB zero-filled\n' "$(format_mbps "$upload_speed")" "$upload_color" "$(localized_bandwidth_rating "$upload_rating")" "$C_RESET" "$upload_sample_count" "$TRANSFER_SAMPLE_TOTAL"; fi
   elif [ "$RUN_UPLOAD" -eq 1 ]; then
     if [ "$UI_LANG" = "zh" ]; then printf '  上行样本  不可用\n'; else printf '  Up sample    unavailable\n'; fi
   else
     if [ "$UI_LANG" = "zh" ]; then printf '  上行样本  已跳过\n'; else printf '  Up sample    skipped\n'; fi
   fi
   if [ "$RUN_BANDWIDTH" -eq 1 ] || [ "$RUN_UPLOAD" -eq 1 ]; then
+    if [ "$UI_LANG" = "zh" ]; then printf '  %s可信度%s  %s\n' "$C_DIM" "$C_RESET" "$(localized_transfer_confidence "$transfer_confidence")"; else printf '  %sConfidence%s %s\n' "$C_DIM" "$C_RESET" "$(localized_transfer_confidence "$transfer_confidence")"; fi
     if [ "$UI_LANG" = "zh" ]; then printf '  %s范围%s  当前代理 → Cloudflare；小文件样本，非峰值宽带，不代表 AI API 吞吐。\n' "$C_DIM" "$C_RESET"; else printf '  %sScope%s     Current proxy → Cloudflare; small transfers, not peak bandwidth or AI API throughput.\n' "$C_DIM" "$C_RESET"; fi
     if [ "$UI_LANG" = "zh" ]; then printf '  %s建议%s  %s\n' "$C_DIM" "$C_RESET" "$bandwidth_advice"; else printf '  %sAdvice%s    %s\n' "$C_DIM" "$C_RESET" "$bandwidth_advice"; fi
   fi
@@ -2008,12 +2269,14 @@ render_markdown() {
     printf -- '- 结果：**%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
     printf -- '- 现在适合开发吗？**%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
     printf -- '- 开发适配分：**%s/100 · %s**（规则评分，不是用户百分位）\n\n' "$readiness_score" "$readiness_score_label"
+    printf -- '- AI 交互：**%s/80 · %s**；工程传输：**%s/20 · %s**；传输可信度：**%s**。\n\n' \
+      "$score_service_path" "$interaction_score_label_zh" "$transfer_score" "$transfer_score_label_zh" "$(localized_transfer_confidence "$transfer_confidence")"
     if [ "$EXPLAIN_SCORE" -eq 1 ]; then
-      printf -- '- 评分依据：服务链路 %s/100（可达性 %s + TTFB %s + P95 %s + 抖动 %s）；下行参考样本 %s（%s%s）；上行参考样本 %s（%s%s）；限幅前 %s；结论上限 %s；总分 %s。\n\n' \
+      printf -- '- 评分依据：AI 交互 %s/80（可达性 %s + TTFB %s + P95 %s + 抖动 %s）；下行工程传输 %s/10（%s%s）；上行工程传输 %s/10（%s%s）；限幅前 %s；服务上限 %s；传输上限 %s；总分 %s。\n\n' \
         "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter" \
-        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$(partial_sample_note "$download_rating" markdown)" \
-        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$(partial_sample_note "$upload_rating" markdown)" \
-        "$readiness_score_before_cap" "$readiness_score_cap" "$readiness_score"
+        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$(partial_sample_note "$download_sample_state" markdown)" \
+        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$(partial_sample_note "$upload_sample_state" markdown)" \
+        "$readiness_score_before_cap" "$service_verdict_cap" "$transfer_verdict_cap" "$readiness_score"
     fi
     printf '## 检测到的客户端\n\n'
     printf '| 客户端 | 模型 | 路由 | 配置来源 | 结果 |\n|---|---|---|---|---|\n'
@@ -2024,12 +2287,14 @@ render_markdown() {
     printf -- '- Result: **%s** — %s\n' "$(printf '%s' "$overall" | tr '[:lower:]' '[:upper:]')" "$localized_overall_reason"
     printf -- '- Ready to code? **%s** — %s\n\n' "$readiness_answer" "$readiness_summary"
     printf -- '- Readiness score: **%s/100 · %s** (rule-based, not a user percentile)\n\n' "$readiness_score" "$readiness_score_label"
+    printf -- '- AI interaction: **%s/80 · %s**; engineering transfer: **%s/20 · %s**; transfer confidence: **%s**.\n\n' \
+      "$score_service_path" "$interaction_score_label_en" "$transfer_score" "$transfer_score_label_en" "$(localized_transfer_confidence "$transfer_confidence")"
     if [ "$EXPLAIN_SCORE" -eq 1 ]; then
-      printf -- '- Score breakdown: service path %s/100 (reachability %s + TTFB %s + P95 %s + jitter %s); download reference %s (%s%s); upload reference %s (%s%s); pre-cap %s; verdict cap %s; total %s.\n\n' \
+      printf -- '- Score breakdown: AI interaction %s/80 (reachability %s + TTFB %s + P95 %s + jitter %s); download engineering %s/10 (%s%s); upload engineering %s/10 (%s%s); pre-cap %s; service cap %s; transfer cap %s; total %s.\n\n' \
         "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter" \
-        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$(partial_sample_note "$download_rating" markdown)" \
-        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$(partial_sample_note "$upload_rating" markdown)" \
-        "$readiness_score_before_cap" "$readiness_score_cap" "$readiness_score"
+        "$download_score" "$(localized_bandwidth_rating "$download_speed_rating")" "$(partial_sample_note "$download_sample_state" markdown)" \
+        "$upload_score" "$(localized_bandwidth_rating "$upload_speed_rating")" "$(partial_sample_note "$upload_sample_state" markdown)" \
+        "$readiness_score_before_cap" "$service_verdict_cap" "$transfer_verdict_cap" "$readiness_score"
     fi
     printf '## Detected clients\n\n'
     printf '| Client | Model | Route | Source | Result |\n|---|---|---|---|---|\n'
@@ -2068,17 +2333,17 @@ render_markdown() {
   if [ "$UI_LANG" = "zh" ]; then
     printf '\n## 代理链路参考传输\n\n'
     printf '> 当前代理到 Cloudflare 的小文件样本；不是峰值宽带测速，也不代表 AI API、GitHub 或 npm 的吞吐。\n\n'
-    printf '| 方向 | 样本速率 | 样本判断 | 测试数据 |\n|---|---:|---|---|\n'
-    if [ "$bandwidth_valid" -eq 1 ]; then printf '| 下行 | %s | %s | Cloudflare，最多 2 MB |\n' "$(format_mbps "$bandwidth_speed")" "$(localized_bandwidth_rating "$download_rating")"; else printf '| 下行 | — | 不可用或已跳过 | — |\n'; fi
-    if [ "$upload_valid" -eq 1 ]; then printf '| 上行 | %s | %s | Cloudflare，最多 1 MB 零字节 |\n' "$(format_mbps "$upload_speed")" "$(localized_bandwidth_rating "$upload_rating")"; else printf '| 上行 | — | 不可用或已跳过 | — |\n'; fi
-    printf '\n- 参考路径：%s%s%s\n- 提示：%s\n' '`' "$proxy_text" '`' "$bandwidth_advice"
+    printf '| 方向 | 样本速率 | 工程传输分 | 判断 | 测试数据 |\n|---|---:|---:|---|---|\n'
+    if [ "$bandwidth_valid" -eq 1 ]; then printf '| 下行 | %s | %s/10 | %s | Cloudflare，%s/%s 有效，最大 2 MB |\n' "$(format_mbps "$bandwidth_speed")" "$download_score" "$(localized_bandwidth_rating "$download_rating")" "$bandwidth_sample_count" "$TRANSFER_SAMPLE_TOTAL"; else printf '| 下行 | — | 10/10（中性） | 不可用或已跳过 | — |\n'; fi
+    if [ "$upload_valid" -eq 1 ]; then printf '| 上行 | %s | %s/10 | %s | Cloudflare，%s/%s 有效，最大 1 MB 零字节 |\n' "$(format_mbps "$upload_speed")" "$upload_score" "$(localized_bandwidth_rating "$upload_rating")" "$upload_sample_count" "$TRANSFER_SAMPLE_TOTAL"; else printf '| 上行 | — | 10/10（中性） | 不可用或已跳过 | — |\n'; fi
+    printf '\n- 传输可信度：**%s**\n- 参考路径：%s%s%s\n- 提示：%s\n' "$(localized_transfer_confidence "$transfer_confidence")" '`' "$proxy_text" '`' "$bandwidth_advice"
   else
     printf '\n## Proxy-path reference transfer\n\n'
     printf '> Small-transfer samples from the current proxy to Cloudflare; not a peak bandwidth test and not AI API, GitHub, or npm throughput.\n\n'
-    printf '| Direction | Sample rate | Sample assessment | Test data |\n|---|---:|---|---|\n'
-    if [ "$bandwidth_valid" -eq 1 ]; then printf '| Down | %s | %s | Cloudflare, up to 2 MB |\n' "$(format_mbps "$bandwidth_speed")" "$(localized_bandwidth_rating "$download_rating")"; else printf '| Down | — | unavailable or skipped | — |\n'; fi
-    if [ "$upload_valid" -eq 1 ]; then printf '| Up | %s | %s | Cloudflare, up to 1 MB zero-filled |\n' "$(format_mbps "$upload_speed")" "$(localized_bandwidth_rating "$upload_rating")"; else printf '| Up | — | unavailable or skipped | — |\n'; fi
-    printf '\n- Reference path: %s%s%s\n- Note: %s\n' '`' "$proxy_text" '`' "$bandwidth_advice"
+    printf '| Direction | Sample rate | Engineering points | Assessment | Test data |\n|---|---:|---:|---|---|\n'
+    if [ "$bandwidth_valid" -eq 1 ]; then printf '| Down | %s | %s/10 | %s | Cloudflare, %s/%s valid, up to 2 MB |\n' "$(format_mbps "$bandwidth_speed")" "$download_score" "$(localized_bandwidth_rating "$download_rating")" "$bandwidth_sample_count" "$TRANSFER_SAMPLE_TOTAL"; else printf '| Down | — | 10/10 (neutral) | unavailable or skipped | — |\n'; fi
+    if [ "$upload_valid" -eq 1 ]; then printf '| Up | %s | %s/10 | %s | Cloudflare, %s/%s valid, up to 1 MB zero-filled |\n' "$(format_mbps "$upload_speed")" "$upload_score" "$(localized_bandwidth_rating "$upload_rating")" "$upload_sample_count" "$TRANSFER_SAMPLE_TOTAL"; else printf '| Up | — | 10/10 (neutral) | unavailable or skipped | — |\n'; fi
+    printf '\n- Transfer confidence: **%s**\n- Reference path: %s%s%s\n- Note: %s\n' "$(localized_transfer_confidence "$transfer_confidence")" '`' "$proxy_text" '`' "$bandwidth_advice"
   fi
   if [ -n "$system_throughput" ]; then
     printf "macOS networkQuality: download **%s**" "$(format_bits_mbps "$system_throughput")"
@@ -2111,16 +2376,18 @@ render_json() {
     warnings_json="$warnings_json$separator\"$(json_escape "$warning")\""
     separator=","
   done < "$WARNINGS_FILE"
-  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","score":%s,"score_label":"%s","score_method":"rule_v3","score_breakdown":{"scored_service":"%s","service_path":%s,"availability":%s,"median_ttfb":%s,"p95":%s,"jitter":%s,"download":%s,"download_speed":%s,"download_partial_penalty":%s,"upload":%s,"upload_speed":%s,"upload_partial_penalty":%s,"pre_cap_total":%s,"verdict_cap":%s},"summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false,"upload_payload":"zero-filled"},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"path":"%s","scope":"cloudflare_reference_path","method":"single_capped_transfer","represents_api_path":false,"represents_peak_bandwidth":false,"download":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"},"upload":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s"}},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"upload_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
+  printf '{"schema_version":%s,"version":"%s","timestamp":"%s","proxy":"%s","result":"%s","reason":"%s","developer_readiness":{"ready":%s,"level":"%s","score":%s,"score_label":"%s","score_method":"rule_v4","dimensions":{"ai_interaction":{"score":%s,"max_score":80,"label":"%s"},"engineering_transfer":{"score":%s,"max_score":20,"label":"%s","confidence":"%s"}},"score_breakdown":{"scored_service":"%s","service_path":%s,"service_path_max":80,"availability":%s,"median_ttfb":%s,"p95":%s,"jitter":%s,"download":%s,"download_speed":%s,"download_partial_penalty":%s,"upload":%s,"upload_speed":%s,"upload_partial_penalty":%s,"transfer_score":%s,"pre_cap_total":%s,"service_verdict_cap":%s,"transfer_verdict_cap":%s,"verdict_cap":%s},"summary":"%s","recommendation":"%s"},"reachable_endpoints":%s,"primary_success_rate_pct":%s,"primary_ttfb_median_ms":%s,"primary_jitter_ms":%s,"privacy":{"credentials_used":false,"billable_requests":false,"upload_payload":"zero-filled"},"warnings":[%s],"bandwidth":{"enabled":%s,"available":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"path":"%s","scope":"cloudflare_reference_path","method":"multi_size_capped_transfer","sample_strategy":"two_sizes_per_direction","confidence":"%s","represents_api_path":false,"represents_peak_bandwidth":false,"download":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s","samples_total":%s,"samples_valid":%s,"samples_complete":%s,"samples_timed_out":%s},"upload":{"enabled":%s,"available":%s,"complete":%s,"http_code":"%s","bytes":%s,"bytes_per_second":%s,"mbps":%s,"rating":"%s","samples_total":%s,"samples_valid":%s,"samples_complete":%s,"samples_timed_out":%s}},"system":{"enabled":%s,"interface":"%s","base_rtt_ms":%s,"download_bits_per_second":%s,"upload_bits_per_second":%s,"proxy_state":"%s"},"services":[%s],"endpoints":[%s]}\n' \
     "$SCHEMA_VERSION" "$VERSION" "$timestamp" "$(json_escape "$proxy_text")" "$overall" "$(json_escape "$overall_reason")" \
     "$readiness_ready" "$readiness_level" "$readiness_score" "$(json_escape "$readiness_score_label_en")" \
+    "$score_service_path" "$(json_escape "$interaction_score_label_en")" "$transfer_score" "$(json_escape "$transfer_score_label_en")" "$transfer_confidence" \
     "$(json_escape "$score_service")" "$score_service_path" "$score_availability" "$score_median_ttfb" "$score_p95" "$score_jitter" \
-    "$download_score" "$download_speed_points" "$download_partial_penalty" "$upload_score" "$upload_speed_points" "$upload_partial_penalty" "$readiness_score_before_cap" "$readiness_score_cap" \
+    "$download_score" "$download_speed_points" "$download_partial_penalty" "$upload_score" "$upload_speed_points" "$upload_partial_penalty" "$transfer_score" "$readiness_score_before_cap" "$service_verdict_cap" "$transfer_verdict_cap" "$readiness_score_cap" \
     "$(json_escape "$readiness_summary_en")" "$(json_escape "$readiness_recommendation_en")" \
     "$reachable_count" "$primary_success_rate" "$primary_ttfb" "$primary_jitter" "$warnings_json" \
     "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$legacy_bandwidth_available" "$legacy_bandwidth_code" "$legacy_bandwidth_bytes" "$legacy_bandwidth_speed" "$(json_escape "$proxy_text")" \
-    "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_complete" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" "$download_mbps" "$download_rating" \
-    "$([ "$RUN_UPLOAD" -eq 1 ] && printf true || printf false)" "$([ "$upload_valid" -eq 1 ] && printf true || printf false)" "$upload_complete" "$upload_code" "$upload_bytes" "$upload_speed" "$upload_mbps" "$upload_rating" \
+    "$transfer_confidence" \
+    "$([ "$RUN_BANDWIDTH" -eq 1 ] && printf true || printf false)" "$([ "$bandwidth_valid" -eq 1 ] && printf true || printf false)" "$bandwidth_complete" "$bandwidth_code" "$bandwidth_bytes" "$bandwidth_speed" "$download_mbps" "$download_rating" "$download_samples_total" "$bandwidth_sample_count" "$bandwidth_complete_count" "$bandwidth_timeout_count" \
+    "$([ "$RUN_UPLOAD" -eq 1 ] && printf true || printf false)" "$([ "$upload_valid" -eq 1 ] && printf true || printf false)" "$upload_complete" "$upload_code" "$upload_bytes" "$upload_speed" "$upload_mbps" "$upload_rating" "$upload_samples_total" "$upload_sample_count" "$upload_complete_count" "$upload_timeout_count" \
     "$([ -n "${system_throughput}${system_upload_throughput}" ] && printf true || printf false)" "$(json_escape "$system_interface")" "${system_rtt:-0}" "${system_throughput:-0}" "${system_upload_throughput:-0}" "$(json_escape "$system_proxy_state")" \
     "$services_json" "$endpoints_json"
 }

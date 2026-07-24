@@ -6,7 +6,7 @@
 
 - a measured service result: `GOOD`, `FAIR`, `POOR`, or `BLOCKED`, plus
   `SKIPPED` when a provider-specific route cannot be probed safely;
-- a 0–100 development-readiness score calculated with `rule_v3`.
+- a 0–100 development-readiness score calculated with `rule_v4`.
 
 The score is a transparent heuristic, not a user percentile or a benchmark of
 model intelligence.
@@ -37,46 +37,73 @@ Skipped clients do not affect another measured client's score. If every
 selected client is skipped, the overall result is `UNAVAILABLE`, the score is
 0, and the command exits with status 1.
 
-## Rule v3 service-path points
+## Rule v4 dimensions
 
-The selected service path contributes up to 100 points.
+The score has two visible dimensions:
+
+- **AI interaction: 80 points.** The lowest-scoring selected service path
+  measures reachability, credential-free protocol TTFB, P95, and jitter.
+- **Engineering transfer: 20 points.** Two small download samples and two
+  zero-filled upload samples measure the current proxy path to Cloudflare.
+
+This weighting makes sustained transfer limitations materially affect the
+result without letting a CDN path outweigh the actual Codex or Claude protocol
+path. Editing files is local; network transfer matters mainly when sending
+context, receiving responses, cloning repositories, and installing
+dependencies.
+
+### AI interaction: 80 points
 
 | Component | Maximum | Rule |
 | --- | ---: | --- |
-| Reachability | 40 | 40 at 100% success, 25 at 60–99%, 11 above 0%, otherwise 0 |
-| Median TTFB | 40 | 40 below 800 ms, 34 below 1,500, 25 below 3,000, 16 below 5,000, otherwise 7 |
+| Reachability | 30 | 30 at 100% success, 19 at 60–99%, 8 above 0%, otherwise 0 |
+| Median TTFB | 30 | 30 below 800 ms, 26 below 1,500, 19 below 3,000, 12 below 5,000, otherwise 5 |
 | P95 TTFB | 10 | 10 below 2,000 ms, 7 below 4,000, 4 below 6,000, otherwise 0 |
 | Jitter | 10 | 10 below 200 ms, 7 below 500, 4 below 1,000, otherwise 0 |
 
 Blocked paths receive zero latency and stability points.
 
-## Cloudflare reference-transfer adjustments
+### Engineering transfer: 20 points
 
-The capped Cloudflare samples are scored independently, but never add points.
-They measure the current path to Cloudflare, not peak bandwidth or AI API
-throughput.
+Download and upload each contribute up to 10 points. The displayed speed is the
+mean of valid samples in that direction.
 
-| Rating | Points per direction |
-| --- | ---: |
-| `FAST` | 0 |
-| `ADEQUATE` | 0 |
-| `SLOW` | -2 |
-| Unavailable or skipped | 0 |
-| Incomplete sample | -1 instead of the speed rating |
+| Direction | 10 points | 7 points | 4 points | 0 points |
+| --- | ---: | ---: | ---: | ---: |
+| Download | at least 10 Mbps | at least 3 Mbps | at least 1 Mbps | below 1 Mbps |
+| Upload | at least 5 Mbps | at least 1 Mbps | at least 0.3 Mbps | below 0.3 Mbps |
 
-Download is `FAST` from 25 Mbps and `ADEQUATE` from 5 Mbps. Upload is `FAST`
-from 10 Mbps and `ADEQUATE` from 2 Mbps. These thresholds only classify the
-capped Cloudflare sample; they are not general-purpose ISP quality ratings.
-Across both directions, reference transfers can reduce the score by at most
-four points.
+The ratings are `COMFORTABLE`, `MILDLY LIMITED`, `CONSTRAINED`, and
+`SEVERELY LIMITED`. They apply only to these capped Cloudflare samples and are
+not general-purpose ISP ratings.
+
+Skipped or unavailable transfer directions receive a neutral 10 points so
+firewalls, offline reporting, or `--no-bandwidth` do not create a false
+penalty. The dimension is labelled `UNMEASURED`, and JSON reports its
+confidence. A partial sample can still supply an estimate, but lowers
+confidence and cannot by itself establish a confirmed bottleneck.
 
 ## Caps and labels
 
-Service health still limits the final score:
+The raw dimension total is limited by both service and transfer evidence.
+Service caps are:
 
 - usable `FAIR` paths are capped at 89;
 - temporarily unavailable `FAIR` and `POOR` paths are capped at 64;
 - `BLOCKED` paths are capped at 0.
+
+Transfer caps require repeat evidence:
+
+- when both valid samples in either direction are `CONSTRAINED` or worse, the
+  total is capped at 79;
+- when both valid samples in either direction are `SEVERELY LIMITED`, the
+  total is capped at 74;
+- one valid `SEVERELY LIMITED` estimate caps the total at 89, but is not treated
+  as confirmed.
+
+The final cap is the lower of the service and transfer caps. This prevents an
+excellent TTFB from hiding a repeatedly unusable transfer path while avoiding
+a strong conclusion from one partial sample.
 
 | Score | Label |
 | ---: | --- |
@@ -85,5 +112,6 @@ Service health still limits the final score:
 | 65–74 | `USABLE` |
 | 0–64 | `LIMITED` |
 
-Run `ipcheck --explain-score` to see every component. JSON reports expose the
-same calculation under `developer_readiness.score_breakdown`.
+Run `ipcheck --explain-score` to see both dimensions, their components, and all
+caps. JSON schema 3 exposes the same calculation under
+`developer_readiness.dimensions` and `developer_readiness.score_breakdown`.

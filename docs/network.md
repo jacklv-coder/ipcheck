@@ -72,16 +72,19 @@ unauthenticated protocol request. It never reads `ANTHROPIC_AUTH_TOKEN`.
 The service table measures time to first byte and jitter; it is not a transfer
 speed test. The separate reference-transfer section:
 
-- downloads one capped sample of at most 2 MB from Cloudflare;
-- uploads one capped sample of at most 1 MB of zero-filled data;
+- downloads two capped samples (256 KiB and 2 MB) from Cloudflare;
+- uploads two capped zero-filled samples (128 KiB and 1 MB);
 - uses the reported proxy/network path;
-- treats incomplete transfers as estimates;
-- never adds readiness points for a high result.
+- limits each transfer request to at most eight seconds;
+- averages valid sample rates and reports sample confidence;
+- contributes 20 points to the readiness score, with repeated low results
+  applying a score cap.
 
 `https://speed.cloudflare.com/__down` is the download API used by
 [Cloudflare's official speed-test engine](https://github.com/cloudflare/speedtest).
-The official engine combines repeated transfers at multiple sizes; ipcheck's
-single capped transfer deliberately does not reproduce that methodology.
+The official engine performs a broader adaptive benchmark. ipcheck uses only
+two small sizes per direction to reduce runtime and data usage; it deliberately
+does not reproduce Cloudflare's full speed-test methodology.
 
 The sample answers a narrow question: how a small transfer to Cloudflare
 behaved on the current proxy/network path at that moment. It is not:
@@ -90,10 +93,11 @@ behaved on the current proxy/network path at that moment. It is not:
 - a measurement of OpenAI, Anthropic, GitHub, or npm throughput;
 - a substitute for the service-specific reachability and TTFB probes.
 
-A complete low sample can deduct two readiness points per direction. A high or
-moderate sample adds no points, an unavailable/skipped sample has no effect,
-and an incomplete sample deducts one point per direction. This keeps the
-reference signal secondary to the actual AI service path.
+The two directions form the 20-point engineering-transfer dimension. A
+repeated constrained result can cap an otherwise high total; unavailable or
+skipped directions remain neutral and are labelled unmeasured. This gives
+transfer performance meaningful weight while keeping the actual AI service
+path as the primary signal. See [Scoring and result rules](scoring.md).
 
 Use `--no-upload` to skip upload only, or `--no-bandwidth` to skip both. The
 optional `--system` flag runs macOS `networkQuality`, which may transfer

@@ -5,6 +5,19 @@ All notable changes to ipcheck are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-24
+
+### Changed
+
+- Replace readiness-score rule v3 with rule v4: AI interaction now contributes
+  80 points and engineering transfer contributes 20, with repeated constrained
+  transfer samples applying conservative score caps.
+- Replace the single Cloudflare transfer in each direction with two capped
+  sizes, average valid rates, cap each request at eight seconds, and expose
+  confidence plus sample counts in human, Markdown, and JSON reports.
+- Bump JSON `schema_version` to 3 for explicit AI-interaction and
+  engineering-transfer dimensions and transfer-cap metadata.
+
 ## [0.9.0] - 2026-07-23
 
 ### Changed
@@ -171,7 +184,8 @@ All notable changes to ipcheck are documented here. The project follows
 - Homebrew and direct-download packaging.
 - Median/P95 TTFB, jitter, reference bandwidth, and macOS `networkQuality`.
 
-[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jacklv-coder/ipcheck/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/jacklv-coder/ipcheck/compare/v0.8.0...v0.8.1
