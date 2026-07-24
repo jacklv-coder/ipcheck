@@ -37,13 +37,16 @@ automation. Output includes:
 - overall result and developer readiness;
 - per-service and per-endpoint measurements;
 - score method and component breakdown;
+- separate AI-interaction and engineering-transfer dimensions;
 - warnings and redacted network path;
 - capped Cloudflare reference transfers and optional macOS system measurements;
 - explicit privacy guarantees.
 
-The `bandwidth` object name is retained for JSON compatibility. Its
-`scope`, `method`, `represents_api_path`, and `represents_peak_bandwidth`
-fields define the narrower Cloudflare reference-transfer meaning.
+Schema 3 adds `developer_readiness.dimensions`, transfer caps, confidence, and
+per-direction sample counts. The `bandwidth` object name is retained for JSON
+compatibility. Its `scope`, `method`, `sample_strategy`,
+`represents_api_path`, and `represents_peak_bandwidth` fields define the
+narrower Cloudflare reference-transfer meaning.
 
 Additive fields may appear without changing `schema_version`; breaking field
 changes increment it. Progress is disabled for JSON and Markdown modes.

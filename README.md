@@ -35,7 +35,7 @@ brew upgrade ipcheck
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.9.0/bin/ipcheck \
+curl -fsSL https://raw.githubusercontent.com/jacklv-coder/ipcheck/v0.10.0/bin/ipcheck \
   -o "$HOME/.local/bin/ipcheck"
 chmod +x "$HOME/.local/bin/ipcheck"
 ```
@@ -119,9 +119,9 @@ The Cloudflare samples describe small transfers from the current proxy/network
 path to Cloudflare. They are not peak-bandwidth tests and do not represent
 OpenAI, Anthropic, GitHub, or npm throughput.
 
-The 0–100 score is a transparent rule, not a user percentile. The measured AI
-service path supplies all positive points; low Cloudflare samples can only make
-a small deduction. See
+The 0–100 score is a transparent rule, not a user percentile. AI interaction
+contributes 80 points and engineering transfer contributes 20. Repeated
+constrained transfer samples can also cap an otherwise high score. See
 [Scoring and result rules](docs/scoring.md) for the exact calculation.
 
 ## Claude Code gateway example

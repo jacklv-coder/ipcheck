@@ -178,10 +178,11 @@ fi
                 "  1",
                 "  0/100",
                 "  █",
+                "  AI 交互",
                 "  评分构成",
-                "    服务链路",
-                "    下行参考样本",
-                "    上行参考样本",
+                "    AI 交互",
+                "    下行工程传输",
+                "    上行工程传输",
                 "  当前网络",
                 "  可以正常开发",
                 "  建议先",
@@ -220,10 +221,11 @@ fi
                 "  1",
                 "  0/100",
                 "  █",
+                "  AI interaction",
                 "  Score breakdown",
-                "    Service path",
-                "    Download reference",
-                "    Upload reference",
+                "    AI interaction",
+                "    Download engineering",
+                "    Upload engineering",
                 "  This network",
                 "  You can work normally",
                 "  Switch proxy routes",
@@ -340,7 +342,11 @@ def frame(command: str, lines: list[str], language: str) -> Image.Image:
     draw.text((76, 98), command, font=body_font, fill=TEXT)
 
     max_lines = 28
-    visible = wrap_lines(draw, lines, body_font)[-max_lines:]
+    wrapped = wrap_lines(draw, lines, body_font)
+    if len(wrapped) > max_lines:
+        visible = wrapped[:10] + ["  ⋯"] + wrapped[-17:]
+    else:
+        visible = wrapped
     score_color = GREEN
     for candidate in lines:
         score_match = re.search(r"\b(\d+)/100\b", candidate)
